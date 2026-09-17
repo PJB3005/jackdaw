@@ -611,9 +611,9 @@ pub(crate) fn build_inspector_displays(
                 name,
                 type_path,
                 entity: source_entity,
-                component: Some(component_id),
                 is_overridden,
                 is_derived,
+                removable: true,
                 prefab_ctx: spec_prefab_ctx,
                 revert_through_prefab,
                 icon_font: &icon_font.0,
@@ -806,9 +806,9 @@ pub(crate) fn build_inspector_displays(
                     name: &name,
                     type_path: &type_path,
                     entity: source_entity,
-                    component: None,
                     is_overridden: false,
                     is_derived: false,
+                    removable: true,
                     prefab_ctx: None,
                     revert_through_prefab: false,
                     icon_font: &icon_font.0,
@@ -1018,11 +1018,12 @@ pub(crate) struct ComponentDisplaySpec<'a> {
     pub name: &'a str,
     pub type_path: &'a str,
     pub entity: Entity,
-    pub component: Option<ComponentId>,
     pub is_overridden: bool,
     /// True when the component is on the live entity but has no authored
     /// document patch (`#[require]` companions, runtime inserts, etc.).
     pub is_derived: bool,
+    /// Show the header X that dispatches `component.remove`.
+    pub removable: bool,
     /// When `Some`, the entity sits inside a prefab instance. Drives
     /// the right-click menu for every component on the entity.
     pub prefab_ctx: Option<PrefabInstanceCtx>,
@@ -1057,9 +1058,9 @@ pub(crate) fn spawn_component_display(
         name,
         type_path,
         entity,
-        component,
         is_overridden,
         is_derived,
+        removable,
         prefab_ctx,
         revert_through_prefab,
         icon_font,
@@ -1226,8 +1227,8 @@ pub(crate) fn spawn_component_display(
             });
         });
 
-    if component.is_some() {
-        let type_path_owned = type_path.to_string();
+    if is_overridden {
+        let revert_type_path = type_path.to_string();
         let entity_param = entity;
 
         // Revert button (only shown for overridden prefab components).
@@ -1237,85 +1238,79 @@ pub(crate) fn spawn_component_display(
         // for the rich tooltip popover); the new prefab system calls
         // `prefab::operators::revert_component` directly with the
         // entity's AST key, so it skips the tooltip wiring.
-        if is_overridden {
-            let revert_type_path = type_path_owned.clone();
-            let revert_through_new_prefab = revert_through_prefab && prefab_ctx.is_some();
-            if revert_through_new_prefab {
-                let prefab_type_path = revert_type_path.clone();
-                commands.spawn((
-                    Text::new(String::from(Icon::RotateCcw.unicode())),
-                    TextFont {
-                        font: font.clone().into(),
-                        font_size: tokens::TEXT_SIZE_SM,
-                        ..Default::default()
-                    },
-                    TextColor(default_style::INSPECTOR_OVERRIDE),
-                    Hovered::default(),
-                    ChildOf(header),
-                    bevy::ui_widgets::observe(
-                        move |_: On<Pointer<Click>>, mut commands: Commands| {
-                            let revert_path = prefab_type_path.clone();
-                            commands
-                                .operator("prefab.revert_component")
-                                .settings(CallOperatorSettings {
-                                    creates_history_entry: true,
-                                    ..default()
-                                })
-                                .param("entity", entity_param)
-                                .param("type_path", revert_path)
-                                .call();
-                            commands.queue(move |world: &mut World| {
-                                if let Ok(mut ec) = world.get_entity_mut(entity_param) {
-                                    ec.insert(InspectorDirty);
-                                }
-                            });
-                        },
-                    ),
-                ));
-            } else {
-                let bo_call = ButtonOperatorCall::new(super::ops::ComponentRevertBaselineOp::ID)
-                    .with_param("entity", entity_param)
-                    .with_param("type_path", revert_type_path.clone());
-                commands.spawn((
-                    Text::new(String::from(Icon::RotateCcw.unicode())),
-                    TextFont {
-                        font: font.clone().into(),
-                        font_size: tokens::TEXT_SIZE_SM,
-                        ..Default::default()
-                    },
-                    TextColor(default_style::INSPECTOR_OVERRIDE),
-                    Hovered::default(),
-                    bo_call,
-                    ChildOf(header),
-                    bevy::ui_widgets::observe(
-                        move |_: On<Pointer<Click>>, mut commands: Commands| {
-                            commands
-                                .operator(super::ops::ComponentRevertBaselineOp::ID)
-                                .param("entity", entity_param)
-                                .param("type_path", revert_type_path.clone())
-                                .call();
-                        },
-                    ),
-                ));
-            }
-        }
-
-        // Remove component button (X icon). See revert button for the
-        // tooltip-data + manual-dispatch pattern.
-        if !is_derived {
-            let remove_path = type_path_owned.clone();
-            let remove_call = ButtonOperatorCall::new(super::ops::ComponentRemoveOp::ID)
+        let revert_through_new_prefab = revert_through_prefab && prefab_ctx.is_some();
+        if revert_through_new_prefab {
+            let prefab_type_path = revert_type_path.clone();
+            commands.spawn((
+                Text::new(String::from(Icon::RotateCcw.unicode())),
+                TextFont {
+                    font: font.clone().into(),
+                    font_size: tokens::TEXT_SIZE_SM,
+                    ..Default::default()
+                },
+                TextColor(default_style::INSPECTOR_OVERRIDE),
+                Hovered::default(),
+                ChildOf(header),
+                bevy::ui_widgets::observe(move |_: On<Pointer<Click>>, mut commands: Commands| {
+                    let revert_path = prefab_type_path.clone();
+                    commands
+                        .operator("prefab.revert_component")
+                        .settings(CallOperatorSettings {
+                            creates_history_entry: true,
+                            ..default()
+                        })
+                        .param("entity", entity_param)
+                        .param("type_path", revert_path)
+                        .call();
+                    commands.queue(move |world: &mut World| {
+                        if let Ok(mut ec) = world.get_entity_mut(entity_param) {
+                            ec.insert(InspectorDirty);
+                        }
+                    });
+                }),
+            ));
+        } else {
+            let bo_call = ButtonOperatorCall::new(super::ops::ComponentRevertBaselineOp::ID)
                 .with_param("entity", entity_param)
-                .with_param("type_path", remove_path.clone());
-            commands
-                .spawn_scene(bsn! {
-                    @FeathersToolButton {
-                        @caption: bsn! { icon_scene(Icon::X.unicode(), tokens::TEXT_SIZE_SM_PX) },
-                        @variant: {ButtonVariant::Plain}
-                    }
-                })
-                .insert((Hovered::default(), remove_call, ChildOf(header)));
+                .with_param("type_path", revert_type_path.clone());
+            commands.spawn((
+                Text::new(String::from(Icon::RotateCcw.unicode())),
+                TextFont {
+                    font: font.clone().into(),
+                    font_size: tokens::TEXT_SIZE_SM,
+                    ..Default::default()
+                },
+                TextColor(default_style::INSPECTOR_OVERRIDE),
+                Hovered::default(),
+                bo_call,
+                ChildOf(header),
+                bevy::ui_widgets::observe(move |_: On<Pointer<Click>>, mut commands: Commands| {
+                    commands
+                        .operator(super::ops::ComponentRevertBaselineOp::ID)
+                        .param("entity", entity_param)
+                        .param("type_path", revert_type_path.clone())
+                        .call();
+                }),
+            ));
         }
+    }
+
+    // Remove component button (X icon). See revert button for the
+    // tooltip-data + manual-dispatch pattern.
+    if removable && !is_derived {
+        let remove_path = type_path.to_string();
+        let entity_param = entity;
+        let remove_call = ButtonOperatorCall::new(super::ops::ComponentRemoveOp::ID)
+            .with_param("entity", entity_param)
+            .with_param("type_path", remove_path.clone());
+        commands
+            .spawn_scene(bsn! {
+                @FeathersToolButton {
+                    @caption: bsn! { icon_scene(Icon::X.unicode(), tokens::TEXT_SIZE_SM_PX) },
+                    @variant: {ButtonVariant::Plain}
+                }
+            })
+            .insert((Hovered::default(), remove_call, ChildOf(header)));
     }
 
     // Right-click context menu on prefab-instance component headers.
@@ -1490,7 +1485,6 @@ mod tests {
         .init_asset::<Image>()
         .init_asset::<Font>();
 
-        let component = app.world_mut().register_component::<Transform>();
         let spawn = app
             .world_mut()
             .register_system(move |mut commands: Commands| {
@@ -1503,9 +1497,9 @@ mod tests {
                         name: "Transform",
                         type_path: "bevy_transform::components::transform::Transform",
                         entity,
-                        component: Some(component),
                         is_overridden: false,
                         is_derived: false,
+                        removable: true,
                         prefab_ctx: None,
                         revert_through_prefab: false,
                         icon_font: &font,
@@ -1525,6 +1519,55 @@ mod tests {
                 .iter(app.world())
                 .any(|call| call.id == crate::inspector::ops::ComponentRemoveOp::ID),
             "the remove control is a feathers tool button carrying the remove operator",
+        );
+    }
+
+    /// A card keyed only by type path still offers remove.
+    #[test]
+    fn a_project_component_card_has_the_remove_control() {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+            bevy::scene::ScenePlugin,
+        ))
+        .init_asset::<Image>()
+        .init_asset::<Font>();
+
+        let spawn = app
+            .world_mut()
+            .register_system(move |mut commands: Commands| {
+                let entity = commands.spawn_empty().id();
+                let font: Handle<Font> = Handle::default();
+                let collapse_state = crate::inspector::InspectorCollapseState::default();
+                spawn_component_display(
+                    &mut commands,
+                    ComponentDisplaySpec {
+                        name: "PlayerSpawnPoint",
+                        type_path: "web_shooter::player::PlayerSpawnPoint",
+                        entity,
+                        is_overridden: false,
+                        is_derived: false,
+                        removable: true,
+                        prefab_ctx: None,
+                        revert_through_prefab: false,
+                        icon_font: &font,
+                        editor_font: &font,
+                        collapse_state: &collapse_state,
+                    },
+                );
+            });
+        app.world_mut().run_system(spawn).expect("system runs");
+        app.world_mut().flush();
+
+        let mut removes = app
+            .world_mut()
+            .query_filtered::<&ButtonOperatorCall, With<FeathersToolButton>>();
+        assert!(
+            removes
+                .iter(app.world())
+                .any(|call| call.id == crate::inspector::ops::ComponentRemoveOp::ID),
+            "a project component card has the remove control",
         );
     }
 
