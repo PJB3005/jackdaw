@@ -4,6 +4,7 @@ use bevy::{
     camera::{RenderTarget, visibility::RenderLayers},
     core_pipeline::oit::OrderIndependentTransparencySettings,
     dev_tools::infinite_grid::{InfiniteGrid, InfiniteGridPlugin},
+    ecs::{lifecycle::HookContext, world::DeferredWorld},
     gizmos::{GizmoAsset, retained::Gizmo},
     image::ImageSampler,
     prelude::*,
@@ -105,24 +106,61 @@ struct AxisIndicatorAsset(Handle<GizmoAsset>);
 #[derive(Component)]
 pub struct ViewportGrid(pub Entity);
 
+#[derive(Component)]
+#[component(immutable)]
+#[component(on_discard = on_discard_function)]
+pub(crate) struct ReservedViewportLayer(usize);
+
+impl ReservedViewportLayer {
+    pub fn get_layer(&self) -> usize {
+        self.0
+    }
+}
+
+fn on_discard_function(mut world: DeferredWorld, context: HookContext) {
+    let id = world
+        .get::<ReservedViewportLayer>(context.entity)
+        .unwrap()
+        .0;
+    world
+        .get_resource_mut::<ViewportLayerCounter>()
+        .unwrap()
+        .free(id);
+}
+
 /// Shared counter that hands out a unique [`RenderLayers`] index per
 /// viewport. Layer 0 is the default world; layer 1 is reserved for the
 /// material preview and layer 2 for the Project window's thumbnail stage
 /// ([`crate::thumbnail::THUMBNAIL_LAYER`]). Per-viewport grids start after
 /// those so they only render to "their" camera.
 #[derive(Resource)]
-pub(crate) struct ViewportLayerCounter(usize);
+pub(crate) struct ViewportLayerCounter {
+    last: usize,
+    free: Vec<usize>,
+}
 
 impl Default for ViewportLayerCounter {
     fn default() -> Self {
-        Self(crate::thumbnail::THUMBNAIL_LAYER)
+        Self {
+            last: crate::thumbnail::THUMBNAIL_LAYER,
+            free: vec![],
+        }
     }
 }
 
 impl ViewportLayerCounter {
-    pub(crate) fn next(&mut self) -> usize {
-        self.0 += 1;
-        self.0
+    pub(crate) fn next(&mut self) -> ReservedViewportLayer {
+        ReservedViewportLayer(self.free.pop().unwrap_or_else(|| {
+            self.last += 1;
+            self.last
+        }))
+    }
+
+    pub(crate) fn free(&mut self, val: usize) {
+        assert!(val <= self.last);
+        assert!(!self.free.contains(&val));
+
+        self.free.push(val);
     }
 }
 
@@ -460,8 +498,8 @@ pub(crate) fn build_3d_presentation(world: &mut World, parent: Entity) -> Entity
     // in the camera's mask so scene content (default-layer entities)
     // still draws here.
     let viewport_layer = world.resource_mut::<ViewportLayerCounter>().next();
-    let camera_layers = RenderLayers::from_layers(&[0, viewport_layer]);
-    let grid_layers = RenderLayers::layer(viewport_layer);
+    let camera_layers = RenderLayers::from_layers(&[0, viewport_layer.get_layer()]);
+    let grid_layers = RenderLayers::layer(viewport_layer.get_layer());
 
     let grid_settings = world.resource::<GridSettings>().0;
     let grid = world
@@ -503,10 +541,13 @@ pub(crate) fn build_3d_presentation(world: &mut World, parent: Entity) -> Entity
                 edge_threshold_min: Sensitivity::Medium,
                 ..default()
             },
-            JackdawCameraSettings::default(),
-            ViewportConfig::default(),
-            camera_layers,
-            ViewportGrid(grid),
+            (
+                JackdawCameraSettings::default(),
+                ViewportConfig::default(),
+                camera_layers,
+                ViewportGrid(grid),
+                viewport_layer,
+            ),
         ))
         .id();
 

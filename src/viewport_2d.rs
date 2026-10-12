@@ -1567,7 +1567,7 @@ pub(crate) fn build_2d_presentation(world: &mut World, parent: Entity) -> Entity
     // this camera alone. Layer 0 stays in the mask so default-layer scene
     // content still draws here.
     let viewport_layer = world.resource_mut::<ViewportLayerCounter>().next();
-    let camera_layers = RenderLayers::from_layers(&[0, viewport_layer]);
+    let camera_layers = RenderLayers::from_layers(&[0, viewport_layer.get_layer()]);
 
     let camera = world
         .spawn((
@@ -1581,6 +1581,7 @@ pub(crate) fn build_2d_presentation(world: &mut World, parent: Entity) -> Entity
             RenderTarget::Image(image_handle.clone().into()),
             Msaa::Off,
             camera_layers,
+            viewport_layer,
         ))
         .id();
 
