@@ -9,9 +9,11 @@ use bevy::{
     image::ToExtents,
     picking::{
         backend::HitData,
-        events::{Click, Pointer, Press},
+        events::{Pointer, PointerClick, PointerPress},
         hover::PickingInteraction,
-        pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput, PointerPress},
+        pointer::{
+            Location, PointerAction, PointerButton, PointerId, PointerInput, PointerPressState,
+        },
     },
     prelude::*,
     render::{
@@ -929,7 +931,7 @@ const BUTTON_CENTRE: Vec2 = Vec2::new(500.0, 250.0);
 const PANEL_ON_TOP: i32 = 1000;
 
 /// What the authored button has heard from the pointer. `bevy_ui_widgets`
-/// buttons are observers on `Pointer<Press>` and `Pointer<Click>`, not readers
+/// buttons are observers on `PointerPress` and `PointerClick`, not readers
 /// of editor state.
 #[derive(Resource, Default)]
 struct WidgetEvents {
@@ -1366,10 +1368,6 @@ fn the_mode_control_is_a_radio_group_and_checks_the_current_mode() {
             app.world().get::<RadioButton>(segment).is_some(),
             "a segment is a radio button",
         );
-        assert!(
-            app.world().get::<Interaction>(segment).is_none(),
-            "and not a hand-rolled interaction control",
-        );
         let bar = app
             .world()
             .get::<ChildOf>(segment)
@@ -1460,10 +1458,10 @@ fn authored_button(app: &mut App) -> (Entity, Entity) {
         .id();
     app.world_mut()
         .entity_mut(button)
-        .observe(|_: On<Pointer<Press>>, mut events: ResMut<WidgetEvents>| {
+        .observe(|_: On<PointerPress>, mut events: ResMut<WidgetEvents>| {
             events.presses += 1;
         })
-        .observe(|_: On<Pointer<Click>>, mut events: ResMut<WidgetEvents>| {
+        .observe(|_: On<PointerClick>, mut events: ResMut<WidgetEvents>| {
             events.clicks += 1;
         });
     (root, button)
@@ -1512,18 +1510,14 @@ fn press_over_authored(app: &mut App, panel: Entity, authored: Vec2) {
         .get::<Viewport2dPanelHost>(panel)
         .map(|host| (host.stage, host.camera))
         .expect("host on panel parent");
-    let event = Press {
+    let target = window_target(app);
+    app.world_mut().trigger(PointerPress {
+        entity: stage,
+        pointer: Pointer::new(PointerId::Mouse, Location { target, position }),
         button: PointerButton::Primary,
         hit: HitData::new(camera, 0.0, None, None),
         count: 1,
-    };
-    let target = window_target(app);
-    app.world_mut().trigger(Pointer::new(
-        PointerId::Mouse,
-        Location { target, position },
-        event,
-        stage,
-    ));
+    });
     settle(app);
 }
 
@@ -1535,8 +1529,8 @@ fn pointer_is_pressed(app: &App, panel: Entity) -> bool {
         .expect("host on panel parent")
         .pointer;
     app.world()
-        .get::<PointerPress>(pointer)
-        .is_some_and(PointerPress::is_any_pressed)
+        .get::<PointerPressState>(pointer)
+        .is_some_and(PointerPressState::is_any_pressed)
 }
 
 fn moved() -> PointerAction {
@@ -1737,20 +1731,20 @@ fn click_grid_step(app: &mut App, panel: Entity, steps: i32) {
     assert_eq!(found.len(), 1, "one stepper end per direction per panel");
     let camera = camera_of(app, panel);
     let target = window_target(app);
-    app.world_mut().trigger(Pointer::new(
-        PointerId::Mouse,
-        Location {
-            target,
-            position: Vec2::ZERO,
-        },
-        Click {
-            button: PointerButton::Primary,
-            hit: HitData::new(camera, 0.0, None, None),
-            duration: core::time::Duration::ZERO,
-            count: 1,
-        },
-        found[0],
-    ));
+    app.world_mut().trigger(PointerClick {
+        entity: found[0],
+        pointer: Pointer::new(
+            PointerId::Mouse,
+            Location {
+                target,
+                position: Vec2::ZERO,
+            },
+        ),
+        button: PointerButton::Primary,
+        hit: HitData::new(camera, 0.0, None, None),
+        duration: core::time::Duration::ZERO,
+        count: 1,
+    });
 }
 
 fn window_target(app: &mut App) -> NormalizedRenderTarget {
@@ -1807,7 +1801,7 @@ fn segment_background(app: &mut App, panel: Entity, mode: Viewport2dMode) -> Col
         .0
 }
 
-/// Click a header segment the way a user does: the `Pointer<Click>` its
+/// Click a header segment the way a user does: the `PointerClick` its
 /// inline observer is watching for.
 fn click_segment(app: &mut App, panel: Entity, mode: Viewport2dMode) {
     let segment = segment_entity(app, panel, mode);
@@ -1817,20 +1811,20 @@ fn click_segment(app: &mut App, panel: Entity, mode: Viewport2dMode) {
         .expect("host on panel parent")
         .camera;
     let target = window_target(app);
-    app.world_mut().trigger(Pointer::new(
-        PointerId::Mouse,
-        Location {
-            target,
-            position: Vec2::ZERO,
-        },
-        Click {
-            button: PointerButton::Primary,
-            hit: HitData::new(camera, 0.0, None, None),
-            duration: core::time::Duration::ZERO,
-            count: 1,
-        },
-        segment,
-    ));
+    app.world_mut().trigger(PointerClick {
+        entity: segment,
+        pointer: Pointer::new(
+            PointerId::Mouse,
+            Location {
+                target,
+                position: Vec2::ZERO,
+            },
+        ),
+        button: PointerButton::Primary,
+        hit: HitData::new(camera, 0.0, None, None),
+        duration: core::time::Duration::ZERO,
+        count: 1,
+    });
 }
 
 /// The fit is pure: the largest zoom that leaves the canvas and its margin

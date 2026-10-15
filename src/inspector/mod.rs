@@ -18,14 +18,13 @@ pub(crate) mod material_row;
 mod modifier_display;
 pub mod node_card;
 pub(crate) mod ops;
-#[cfg(feature = "physics")]
-pub(crate) mod physics_display;
 mod prefab_field_dots;
 pub(crate) mod prefab_menu;
 pub(crate) mod project_component_display;
 pub(crate) mod reflect_fields;
 pub(crate) mod schema_fields;
 pub(crate) mod type_metadata_pane;
+pub mod unavailable;
 pub mod val_field;
 
 use crate::EditorEntity;
@@ -93,12 +92,12 @@ impl Plugin for InspectorPlugin {
         app.init_resource::<InspectorCollapseState>();
         app.init_resource::<bindings_card::BindingsCardEcho>();
         app.init_resource::<PendingInspectorRebuild>();
+        app.init_resource::<unavailable::UnavailableTypes>();
 
         let mut denylist = component_picker::PickerDenylist::default();
-        component_picker::populate_avian_picker_denylist(&mut denylist);
+        component_picker::populate_module_picker_denylist(&mut denylist);
         app.insert_resource(denylist);
-        #[cfg(feature = "physics")]
-        app.add_observer(add_header::on_physics_chip_click);
+        app.add_observer(add_header::on_component_chip_click);
 
         app.register_type_data::<Name, ReflectDisplayable>()
             .add_plugins(component_tooltip::plugin)
@@ -139,6 +138,14 @@ impl Plugin for InspectorPlugin {
                 Update,
                 component_display::sync_inspector_to_selection
                     .before(category_strip::resolve_active_on_rebuild),
+            )
+            .add_systems(
+                Update,
+                (
+                    unavailable::track_unavailable_types,
+                    unavailable::update_unavailable_notice,
+                )
+                    .chain(),
             )
             .add_systems(
                 Update,
@@ -565,10 +572,10 @@ fn flag_inspector_dirty_on_modifier_stack_change(
 
 /// Rebuild the inspector when the displayed entity's archetype changes.
 ///
-/// Some component picks pull in extra components asynchronously (e.g.
-/// `AvianCollider` triggers our `PostUpdate` sync that builds a real
-/// `Collider`, after which avian's own systems insert `Position`,
-/// `Rotation`, `ColliderAabb`, mass aggregates, etc.). Without this
+/// Some component picks pull in extra components asynchronously (e.g. a
+/// collider component an extension turns into a physics engine's own
+/// collider, after which the engine inserts its position, bounds and mass
+/// components). Without this
 /// watcher the panel built by `sync_inspector_to_selection` keeps showing
 /// only the originally-added component until the user reselects.
 ///
@@ -608,7 +615,7 @@ fn flag_inspector_dirty_on_archetype_change(
 /// When an `InspectorCategoryStripMount` entity is added to the world,
 /// spawn the category tab rail as a child.
 fn on_category_strip_mount_added(
-    trigger: On<Add, category_strip::InspectorCategoryStripMount>,
+    trigger: On<Add<category_strip::InspectorCategoryStripMount>>,
     registry: Res<jackdaw_api_internal::inspector::InspectorRegistry>,
     icon_font: Res<jackdaw_feathers::icons::IconFont>,
     mut commands: Commands,

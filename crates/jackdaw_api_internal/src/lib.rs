@@ -31,17 +31,22 @@
 //! ```
 
 pub mod asset_kinds;
+pub mod brush;
+pub mod document;
 pub mod entity_icons;
 pub mod extensions_config;
 pub mod inspector;
 pub mod keymap;
-pub mod keymap_conditions;
 pub mod lifecycle;
 pub mod operator;
 pub mod pie;
 mod registries;
 pub mod runtime;
+pub mod selection;
 pub mod snapshot;
+pub mod terrain;
+pub mod tools;
+pub mod viewport;
 pub mod widgets;
 
 use std::borrow::Cow;
@@ -49,9 +54,7 @@ use std::sync::Arc;
 
 use bevy::ecs::{system::IntoObserverSystem, world::EntityWorldMut};
 use bevy::prelude::*;
-use bevy_enhanced_input::prelude::{
-    Action, ActionOf, ActionSettings, Fire, InputConditionAppExt as _, InputContextAppExt as _,
-};
+use jackdaw_input::{ActionOf, ActionSettings, Fire, InputActionPlugin, InputContext};
 use jackdaw_panels::{
     DockWindowDescriptor, WindowRegistry, WorkspaceDescriptor, WorkspaceRegistry,
 };
@@ -88,7 +91,6 @@ pub use keymap::{
     apply_keymap_preset, load_active_keymap_preset, mouse_button_from_name, mouse_button_name,
     save_active_keymap_preset,
 };
-pub use keymap_conditions::{DoubleClick, ScrollTick};
 pub use lifecycle::{ActiveModalOperator, Extension, ExtensionCatalog};
 pub use operator::{CallOperatorError, OperatorResult, OperatorWorldExt};
 pub use pie::PlayState;
@@ -116,14 +118,37 @@ pub mod prelude {
         snapshot::{ActiveSnapshotter, SceneSnapshot, SceneSnapshotter},
         widgets::{WidgetDefinition, WidgetInstantiateContext, WidgetRegistry},
     };
-    // The BEI items extension authors need for `actions!` / `bindings!` / observers.
-    pub use bevy_enhanced_input::prelude::{
-        Action, ActionOf, Actions, Binding, Bindings, BlockBy, Cancel, Chord, Complete, Fire, Hold,
-        InputAction, InputModKeys, ModKeys, Ongoing, Press, Release, Start, Tap, TriggerState,
-        actions, bindings,
-    };
     // Re-export Bevy's SystemId here so Operator impls don't need to import it.
     pub use bevy::ecs::system::SystemId;
+}
+
+/// Whether the editor shows its project launcher or an open project.
+///
+/// Scene tooling runs only in [`AppState::Editor`]; gate an extension's
+/// systems with `run_if(in_state(AppState::Editor))`.
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    ProjectSelect,
+    Editor,
+}
+
+/// Marks an entity the editor spawns for itself, such as a material preview,
+/// a gizmo mesh or a panel's camera, rather than one of the scene's.
+///
+/// Tools that pick or gather scene geometry skip these.
+#[derive(Component, Copy, Clone, Default, Debug)]
+pub struct EditorEntity;
+
+/// Work the editor is still doing off the main thread, such as a bake.
+///
+/// An extension spawns an entity carrying it when the work starts and
+/// despawns it when the work lands. While any exists the editor is not idle,
+/// so a remote `wait` for idle keeps waiting.
+#[derive(Component, Clone, Debug)]
+pub struct BackgroundTask {
+    /// What the work is, as a person would name it.
+    pub label: Cow<'static, str>,
 }
 
 /// Trait implemented by every extension. Declares the extension's name
@@ -153,13 +178,29 @@ pub trait JackdawExtension: Send + Sync + 'static {
     }
 
     /// Main registration logic. Called each time the extension is
-    /// enabled. Spawn operators, windows, BEI action entities, and any
+    /// enabled. Spawn operators, windows, input action entities, and any
     /// other owned state here.
     fn register(&self, registrar: &mut ExtensionRegistrar<'_>);
 
+    /// A Bevy [`Plugin`] added to the editor `App` before it runs.
+    ///
+    /// Use it for what [`ExtensionRegistrar`] cannot do on a running
+    /// world: plugin groups, schedules, system sets, and systems that must
+    /// run whether or not a window is open. The editor adds it only for
+    /// extensions enabled at launch, before [`Self::register`] runs.
+    /// Plugins cannot be removed, so enabling such an extension later, or
+    /// loading a build whose plugin has a different [`Plugin::name`], asks
+    /// for a restart instead of activating it. A reload whose plugin keeps
+    /// its name activates live and keeps the plugin added at launch.
+    ///
+    /// A closure `|app: &mut App| { ... }` is a plugin too.
+    fn app_plugin(&self) -> Option<Box<dyn Plugin>> {
+        None
+    }
+
     /// Optional hook called before the extension entity despawns.
     ///
-    /// Child-entity cleanup handles registered windows, operators, BEI
+    /// Child-entity cleanup handles registered windows, operators, input
     /// contexts, and observers automatically. Override only for non-ECS
     /// state (file handles, network sessions, and the like).
     #[expect(unused_variables, reason = "The default implementation does nothing")]
@@ -183,12 +224,13 @@ pub struct ExtensionContext<'a> {
 /// disabling or replacing an extension can remove those registrations live.
 pub type ExtensionRegistrar<'a> = ExtensionContext<'a>;
 
-/// Host-owned BEI context for dynamically installed extensions.
+/// Host-owned input context for dynamically installed extensions.
 ///
 /// Marketplace authors bind operators through
 /// [`ExtensionContext::bind_operator_host`] so activation never needs startup
 /// `App` access and disabling removes the action entities immediately.
 #[derive(Component, Default)]
+#[require(InputContext)]
 pub struct ExtensionInputContext;
 
 impl<'a> ExtensionContext<'a> {
@@ -224,9 +266,9 @@ impl<'a> ExtensionContext<'a> {
     }
 
     /// Calls [`World::add_observer`] to initialize an observer, ensuring that it is removed on unload.
-    pub fn add_observer<E: Event, B: Bundle, M>(
+    pub fn add_observer<E: EventPattern, M>(
         &mut self,
-        system: impl IntoObserverSystem<E, B, M>,
+        system: impl IntoObserverSystem<E, M>,
     ) -> &mut Self {
         self.entity_mut().with_child(Observer::new(system));
         self
@@ -302,8 +344,8 @@ impl<'a> ExtensionContext<'a> {
     }
 
     /// Spawn an entity as a child of the extension entity. Typically
-    /// used for BEI context entities with action bindings:
-    /// `ctx.spawn((MyContext, actions!(MyContext[...])))`.
+    /// used for input context entities with action bindings:
+    /// `ctx.spawn((MyContext, actions![...]))`.
     ///
     /// The returned [`EntityWorldMut`] lets the caller keep adding
     /// components or children. Anything spawned this way is torn down
@@ -327,10 +369,10 @@ impl<'a> ExtensionContext<'a> {
         self.world.entity_mut(self.extension_entity)
     }
 
-    /// Register an operator. Spawns an `OperatorEntity` as a child
-    /// of the extension entity and a `Fire<O>` observer that dispatches the
-    /// operator through [`crate::OperatorWorldExt::operator`]. BEI binding
-    /// modifiers on the actions shape timing (press / release / hold).
+    /// Register an operator. Spawns an `OperatorEntity` as a child of the
+    /// extension entity. Any action tagged with the operator's id
+    /// dispatches it when it fires; the binding's condition shapes the
+    /// timing (press, release, double click).
     pub fn register_operator<O: Operator>(&mut self) -> &mut Self {
         let ext = self.extension_entity;
 
@@ -360,51 +402,12 @@ impl<'a> ExtensionContext<'a> {
                 remote_hidden: O::REMOTE_HIDDEN,
             },
             ChildOf(ext),
-            children![
-                Observer::new(
-                    move |_: On<Fire<O>>,
-                          capture: Option<Res<crate::keymap::KeymapCapture>>,
-                          mut commands: Commands| {
-                        // While the keybind dialog is recording, the press
-                        // naming a chord must not also mean what that chord
-                        // currently means.
-                        if capture.is_some_and(|c| c.recording) {
-                            return;
-                        }
-                        commands
-                            .operator(O::ID)
-                            .settings(CallOperatorSettings {
-                                execution_context: ExecutionContext::Invoke,
-                                creates_history_entry: true,
-                            })
-                            .call();
-                    },
-                ),
-                // Auto-tag any BEI action entity for this operator with
-                // `OperatorAction(Op::ID)` so id-keyed lookups (tooltip
-                // keybind discovery, future command palette) can find the
-                // bindings without naming the typed `Action<Op>`. The
-                // observer covers future spawns; the immediate query pass
-                // below covers entities already spawned before this call
-                // (some `add_to_extension` modules spawn actions first and
-                // register the operator afterwards).
-                Observer::new(move |trigger: On<Add, Action<O>>, mut commands: Commands| {
-                    commands
-                        .entity(trigger.event_target())
-                        .insert(OperatorAction(O::ID));
-                })
-            ],
         ));
-
-        if let Err(err) = self.world.run_system_cached(tag_existing_actions::<O>) {
-            error!("Failed to tag existing actions: {}", err);
-        }
-
         self
     }
 
     /// Record an operator's default key bindings into [`DefaultKeymap`] and
-    /// spawn its BEI action entity WITHOUT bindings. Bindings are attached
+    /// spawn its action entity WITHOUT bindings. Bindings are attached
     /// later by the keymap applier from the active preset, so presets are
     /// the single source of binding truth. The action belongs to the
     /// extension's input context `C`.
@@ -413,7 +416,7 @@ impl<'a> ExtensionContext<'a> {
     /// extension after `apply_active_keymap` re-runs does not accumulate
     /// duplicate entries in the defaults list.
     ///
-    /// The context component `C` must live on the extension's root entity; that is where `ActionOf` points.
+    /// The context component `C` must live on the extension's root entity; that is where [`ActionOf`] points.
     pub fn bind_operator<C: bevy::prelude::Component, O: crate::Operator>(
         &mut self,
         defaults: impl IntoIterator<Item = crate::keymap::PresetInput>,
@@ -476,8 +479,8 @@ impl<'a> ExtensionContext<'a> {
             );
         }
         self.spawn((
-            Action::<O>::new(),
-            ActionOf::<C>::new(ext),
+            ActionOf(ext),
+            OperatorAction(O::ID),
             ActionSettings {
                 require_reset: true,
                 ..Default::default()
@@ -622,20 +625,111 @@ impl<'a> ExtensionContext<'a> {
             .set_component_category(type_path, category_id);
         self
     }
+
+    /// Add a button for operator `O` to the viewport toolbar, after the
+    /// editor's own tools. The button shows `O::LABEL` as its tooltip and is
+    /// highlighted while `O` runs as a modal.
+    pub fn register_toolbar_button<O: Operator>(&mut self, icon: lucide_icons::Icon) -> &mut Self {
+        self.spawn(crate::tools::ToolbarButton {
+            operator_id: O::ID,
+            icon,
+        });
+        self
+    }
+
+    /// Add a toggle to the header of an inspector category that adds or
+    /// removes one component on the selected entity, through the
+    /// `component.add` and `component.remove` operators. The toggle reads as
+    /// on while the selected entity has the component.
+    pub fn register_inspector_chip(
+        &mut self,
+        category_id: impl Into<Cow<'static, str>>,
+        label: impl Into<Cow<'static, str>>,
+        type_path: impl Into<Cow<'static, str>>,
+    ) -> &mut Self {
+        self.spawn(crate::inspector::InspectorChip {
+            category: category_id.into(),
+            label: label.into(),
+            type_path: type_path.into(),
+        });
+        self
+    }
+
+    /// Add a row for operator `O` to the overlays the viewport settings
+    /// menu shows and hides. Clicking the row calls `O`, which flips the
+    /// overlay and writes the new state to the row's
+    /// [`ViewportOverlay::shown`](crate::viewport::ViewportOverlay::shown).
+    pub fn register_viewport_overlay<O: Operator>(
+        &mut self,
+        label: impl Into<Cow<'static, str>>,
+        shown: bool,
+    ) -> &mut Self {
+        self.spawn(crate::viewport::ViewportOverlay {
+            label: label.into(),
+            operator_id: O::ID,
+            shown,
+        });
+        self
+    }
+
+    /// Start every brush the editor creates from now on with `component`,
+    /// written to the scene document as if the person had added it.
+    pub fn register_brush_default(&mut self, component: impl Reflect) -> &mut Self {
+        self.spawn(crate::brush::BrushDefault(Box::new(component)));
+        self
+    }
+
+    /// Add a button for operator `O` to the terrain tool palette. `O` picks
+    /// the tool by setting [`crate::terrain::TerrainEditMode::Extension`] to its own
+    /// id.
+    pub fn register_terrain_tool<O: Operator>(&mut self, icon: lucide_icons::Icon) -> &mut Self {
+        self.spawn(crate::terrain::TerrainTool {
+            operator_id: O::ID,
+            icon,
+        });
+        self
+    }
+
+    /// Initialize resource `R` as one each scene tab keeps its own of; see
+    /// [`crate::document::SceneResource`].
+    pub fn register_scene_resource<
+        R: Resource<Mutability = bevy::ecs::component::Mutable> + Default,
+    >(
+        &mut self,
+    ) -> &mut Self {
+        self.init_resource::<R>();
+        self.spawn(crate::document::SceneResource::of::<R>());
+        self
+    }
 }
 
-/// Tag any `Action<O>` entities that already exist with `OperatorAction(O::ID)`.
-/// Run from `register_operator` to cover the case where action entities were
-/// spawned before the operator was registered. Bevy caches the `QueryState`
-/// across calls when this is invoked via `run_system_cached`.
-fn tag_existing_actions<O: Operator>(
-    world: &mut World,
-    actions: &mut QueryState<Entity, With<Action<O>>>,
+/// Dispatch the operator an action is tagged with when the action fires.
+///
+/// While the keybind dialog is recording, the press naming a chord must not
+/// also mean what that chord currently means.
+fn dispatch_operator_actions(
+    fire: On<Fire>,
+    actions: Query<&OperatorAction>,
+    operators: Option<Res<lifecycle::OperatorIndex>>,
+    capture: Option<Res<crate::keymap::KeymapCapture>>,
+    mut commands: Commands,
 ) {
-    let existing: Vec<Entity> = actions.iter(world).collect();
-    for entity in existing {
-        world.entity_mut(entity).insert(OperatorAction(O::ID));
+    let Ok(&OperatorAction(id)) = actions.get(fire.action) else {
+        return;
+    };
+    if capture.is_some_and(|c| c.recording) {
+        return;
     }
+    if !operators.is_some_and(|operators| operators.by_id.contains_key(id)) {
+        return;
+    }
+    commands
+        .operator(id)
+        .settings(CallOperatorSettings {
+            execution_context: ExecutionContext::Invoke,
+            creates_history_entry: true,
+        })
+        .call();
 }
 
 /// Top level menus available for menu bar entries.
@@ -789,7 +883,7 @@ pub struct PanelContext {
 
 /// Plugin that wires up the extension framework into the editor.
 ///
-/// Adds BEI, sets up the required resources (`OperatorIndex`,
+/// Adds input actions, sets up the required resources (`OperatorIndex`,
 /// `PanelExtensionRegistry`, `ExtensionCatalog`, `ActiveModalOperator`),
 /// and registers the cleanup observers that keep non-ECS state in sync
 /// when extension entities are despawned.
@@ -801,17 +895,16 @@ pub struct ExtensionLoaderPlugin;
 
 impl Plugin for ExtensionLoaderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((lifecycle::plugin, operator::plugin, registries::plugin));
-        app.add_input_context::<ExtensionInputContext>();
-        app.add_input_condition::<DoubleClick>();
-        app.add_input_condition::<ScrollTick>();
+        if !app.is_plugin_added::<InputActionPlugin>() {
+            app.add_plugins(InputActionPlugin);
+        }
+        app.add_plugins((lifecycle::plugin, operator::plugin, registries::plugin))
+            .add_observer(dispatch_operator_actions);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use bevy_enhanced_input::prelude::*;
-
     use super::*;
     use crate::keymap::{DefaultKeymap, PresetInput, PresetPhase};
     use crate::operator::{Operator, OperatorParameters, OperatorResult, OperatorSystemId};
@@ -822,8 +915,7 @@ mod tests {
 
     // Minimal operator: no-op execute, manually implements Operator so the
     // test stays self-contained without spawning SystemIds or running schedules.
-    #[derive(Default, InputAction)]
-    #[action_output(bool)]
+    #[derive(Default)]
     struct TestOp;
 
     impl Operator for TestOp {
@@ -865,22 +957,22 @@ mod tests {
         assert_eq!(keymap.bindings[1].input, PresetInput::key("KeyT").ctrl());
         assert_eq!(keymap.bindings[1].phase, PresetPhase::Press);
 
-        // Exactly one Action<TestOp> entity exists.
-        let action_count = world.query::<&Action<TestOp>>().iter(&world).count();
+        // Exactly one action entity exists for the operator.
+        let action_count = world.query::<&OperatorAction>().iter(&world).count();
         assert_eq!(action_count, 1);
 
         // No Binding components exist on any entity (action spawned without bindings).
         let binding_count = world
-            .query::<&bevy_enhanced_input::prelude::Binding>()
+            .query::<&jackdaw_input::Binding>()
             .iter(&world)
             .count();
         assert_eq!(binding_count, 0);
 
         // The spawned action entity is a child of the extension root entity.
         let (_, child_of) = world
-            .query_filtered::<(Entity, &ChildOf), With<Action<TestOp>>>()
+            .query_filtered::<(Entity, &ChildOf), With<OperatorAction>>()
             .single(&world)
-            .expect("exactly one Action<TestOp> must exist");
+            .expect("exactly one operator action must exist");
         assert_eq!(child_of.parent(), ext);
     }
 
@@ -897,8 +989,8 @@ mod tests {
             .map_or(0, |km| km.bindings.len());
         assert_eq!(entry_count, 0);
 
-        // Exactly one Action<TestOp> entity exists.
-        let action_count = world.query::<&Action<TestOp>>().iter(&world).count();
+        // Exactly one action entity exists for the operator.
+        let action_count = world.query::<&OperatorAction>().iter(&world).count();
         assert_eq!(action_count, 1);
     }
 }

@@ -215,7 +215,7 @@ impl PendingModelRoots {
 /// A queued model holds the glTF it names, and the footer and the wait for an
 /// idle editor both count what is queued; an entry nothing will use any more
 /// would hold an asset nothing renders and a wait nothing can end.
-fn forget_model_root(remove: On<Remove, GltfSource>, mut pending: ResMut<PendingModelRoots>) {
+fn forget_model_root(remove: On<Remove<GltfSource>>, mut pending: ResMut<PendingModelRoots>) {
     pending.forget(remove.entity);
 }
 
@@ -244,7 +244,7 @@ pub(crate) fn forget_model_roots<'a>(
 /// document, so deriving it here is what brings the model back on each of
 /// those paths without the handle ever being written to the document.
 fn derive_world_asset_root(
-    insert: On<Insert, GltfSource>,
+    insert: On<Insert<GltfSource>>,
     sources: Query<&GltfSource>,
     existing: Query<&WorldAssetRoot>,
     parents: Query<&ChildOf>,
@@ -302,7 +302,7 @@ fn model_scene(
 /// Queue the models of children a LOD group no longer keeps as levels: those
 /// past its last level after a change.
 fn queue_models_past_last_level(
-    insert: On<Insert, LodGroup>,
+    insert: On<Insert<LodGroup>>,
     groups: Query<(&LodGroup, &Children)>,
     unplaced: Query<&GltfSource, Without<WorldAssetRoot>>,
     asset_server: Res<AssetServer>,
@@ -325,7 +325,7 @@ fn queue_models_past_last_level(
 /// Queue the models a LOD group that is going kept live as its levels: each
 /// child's, or its own where it names the model itself.
 fn queue_models_of_ungrouped_levels(
-    remove: On<Remove, LodGroup>,
+    remove: On<Remove<LodGroup>>,
     children: Query<&Children>,
     unplaced: Query<&GltfSource, Without<WorldAssetRoot>>,
     asset_server: Res<AssetServer>,
@@ -350,7 +350,7 @@ fn queue_models_of_ungrouped_levels(
 /// Queue the model of a placement that no longer draws the levels its import
 /// settings gave it, once it is told apart from a LOD level.
 fn queue_models_left_by_settings(
-    remove: On<Remove, ModelLevels>,
+    remove: On<Remove<ModelLevels>>,
     unplaced: Query<(), (With<GltfSource>, Without<WorldAssetRoot>)>,
     mut pending: ResMut<PendingModelRoots>,
 ) {
@@ -825,9 +825,8 @@ pub fn spawn_template_in_document(world: &mut World, template: EntityTemplate) -
     let entity = create_entity(&mut commands, template, &mut selection);
     system_state.apply(world);
     crate::scene_io::register_entity_in_ast(world, entity);
-    #[cfg(feature = "physics")]
     if world.get::<crate::brush::Brush>(entity).is_some() {
-        crate::physics_brush_bridge::insert_default_brush_physics(world, entity);
+        crate::brush::apply_brush_defaults(world, entity);
     }
     entity
 }
@@ -3492,18 +3491,20 @@ mod asset_path_tests {
     }
 }
 
-#[cfg(all(test, feature = "physics"))]
+#[cfg(test)]
 mod clone_brush_tests {
     use super::*;
-    use avian3d::prelude::RigidBody;
     use bevy::reflect::PartialReflect;
-    use jackdaw_avian_integration::AvianCollider;
     use jackdaw_bsn::SceneBsnAst;
     use jackdaw_scene_types::Brush;
 
     #[derive(Component, Reflect, Default, Clone, PartialEq, Debug)]
     #[reflect(Component, Default)]
     struct ExtraBrushMarker;
+
+    #[derive(Component, Reflect, Default, Clone, PartialEq, Debug)]
+    #[reflect(Component, Default)]
+    struct DefaultBrushMarker(u32);
 
     #[test]
     fn cloned_brush_keeps_extra_components() {
@@ -3515,8 +3516,11 @@ mod clone_brush_tests {
         app.register_type::<Visibility>();
         app.register_type::<Name>();
         app.register_type::<jackdaw_scene_types::SceneNodeId>();
-        app.register_type::<RigidBody>();
-        app.register_type::<AvianCollider>();
+        app.register_type::<DefaultBrushMarker>();
+        app.world_mut()
+            .spawn(jackdaw_api_internal::brush::BrushDefault(Box::new(
+                DefaultBrushMarker(7),
+            )));
         app.register_type::<ExtraBrushMarker>();
 
         let source = app
@@ -3529,7 +3533,7 @@ mod clone_brush_tests {
             ))
             .id();
         crate::scene_io::register_entity_in_ast(app.world_mut(), source);
-        crate::physics_brush_bridge::insert_default_brush_physics(app.world_mut(), source);
+        crate::brush::apply_brush_defaults(app.world_mut(), source);
 
         app.world_mut().entity_mut(source).insert(ExtraBrushMarker);
         crate::commands::sync_component_to_bsn_doc(
@@ -3553,11 +3557,10 @@ mod clone_brush_tests {
             "user-added components must copy onto the clone"
         );
         assert_eq!(
-            spawned_ref.get::<RigidBody>().copied(),
-            Some(RigidBody::Static),
-            "authored physics must copy onto the clone"
+            spawned_ref.get::<DefaultBrushMarker>(),
+            Some(&DefaultBrushMarker(7)),
+            "a component every new brush starts with must copy onto the clone"
         );
-        assert!(spawned_ref.contains::<AvianCollider>());
         assert_eq!(
             spawned_ref.get::<Brush>().map(|b| b.faces.len()),
             Some(new_brush.faces.len()),

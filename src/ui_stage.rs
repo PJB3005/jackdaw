@@ -21,7 +21,10 @@
 use bevy::{
     ecs::system::SystemParam,
     picking::{
-        events::{Drag, DragDrop, DragEnd, DragStart, Move, Pointer, Press},
+        events::{
+            PointerDrag, PointerDragDrop, PointerDragEnd, PointerDragStart, PointerMove,
+            PointerPress,
+        },
         prelude::Pickable,
     },
     prelude::*,
@@ -383,7 +386,8 @@ fn pixel_rounding(kinds: &CanvasSnap) -> PixelRounding {
 }
 
 /// The unit half of an authored [`Val`], for the values a gesture writes
-/// back. `Val::Auto` has no unit and is absent instead.
+/// back. `Val::Auto` has no unit and is absent instead, as are the font-relative
+/// `Val::Em` and `Val::Rem`, which a gesture has no font size to resolve.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AnchorUnit {
     Px,
@@ -395,11 +399,12 @@ pub enum AnchorUnit {
 }
 
 impl AnchorUnit {
-    /// The unit `value` is stated in, or `None` for `Val::Auto`, which
-    /// is not a length the gesture can put a number back into.
+    /// The unit `value` is stated in, or `None` for `Val::Auto`, `Val::Em`
+    /// and `Val::Rem`, which are not lengths the gesture can put a number
+    /// back into.
     pub fn of(value: Val) -> Option<Self> {
         match value {
-            Val::Auto => None,
+            Val::Auto | Val::Em(_) | Val::Rem(_) => None,
             Val::Px(_) => Some(Self::Px),
             Val::Percent(_) => Some(Self::Percent),
             Val::Vw(_) => Some(Self::Vw),
@@ -722,7 +727,7 @@ pub fn stage_pixels_per_target_pixel(target_scale: f32, inverse_scale_factor: f3
 }
 
 /// Authored (render-target) pixels per pointer pixel: what a
-/// [`Pointer<Drag>`] distance is multiplied by to become an authored delta.
+/// [`PointerDrag`] distance is multiplied by to become an authored delta.
 ///
 /// `stage_scale` is [`stage_pixels_per_target_pixel`] inverted with the
 /// [`UiScale`] taken back out, since pointer locations are reported before
@@ -945,7 +950,7 @@ fn authored_at(
 /// outline lying over it, so the band remembers which and answers only that
 /// one.
 fn on_marquee_start(
-    mut event: On<Pointer<DragStart>>,
+    mut event: On<PointerDragStart>,
     ui_scale: Res<UiScale>,
     overlays: Query<&UiSelectionOverlay>,
     handles: Query<(), With<UiResizeHandle>>,
@@ -987,7 +992,7 @@ fn on_marquee_start(
     let Ok(stage) = stages.get(host.stage) else {
         return;
     };
-    let cursor = event.pointer_location.position / ui_scale.0;
+    let cursor = event.pointer.position / ui_scale.0;
     if let StagePick::Hit(entity) = hit_at(
         cursor,
         host,
@@ -1026,7 +1031,7 @@ fn on_marquee_start(
 }
 
 fn on_marquee_drag(
-    mut event: On<Pointer<Drag>>,
+    mut event: On<PointerDrag>,
     ui_scale: Res<UiScale>,
     hosts: Query<&Viewport2dPanelHost>,
     stages: Query<(&ComputedNode, &UiGlobalTransform), With<Scene2dViewport>>,
@@ -1045,14 +1050,14 @@ fn on_marquee_drag(
     let Ok(stage) = stages.get(band.stage) else {
         return;
     };
-    band.current = authored_at(event.pointer_location.position / ui_scale.0, host, stage);
+    band.current = authored_at(event.pointer.position / ui_scale.0, host, stage);
 }
 
 /// Take everything the band was pulled across. Intersection rather than
 /// containment, so a container wider than the panel does not have to be
 /// swept end to end. The scene's own root is never picked up.
 fn on_marquee_end(
-    mut event: On<Pointer<DragEnd>>,
+    mut event: On<PointerDragEnd>,
     hosts: Query<&Viewport2dPanelHost>,
     roots: Query<(Entity, &UiTargetCamera), AuthoredUiSceneRoot>,
     nodes: AuthoredNodes,
@@ -1440,7 +1445,7 @@ fn spawn_readout(world: &mut World, host: Entity, stage: Entity, at: Vec2) -> En
 /// it, both read at the press. Ctrl is also the snap magnet's inverter,
 /// which [`on_gesture_drag`] reads separately on every drag event.
 fn on_stage_press(
-    mut event: On<Pointer<Press>>,
+    mut event: On<PointerPress>,
     ui_scale: Res<UiScale>,
     keys: Res<ButtonInput<KeyCode>>,
     handles: Query<(), With<UiResizeHandle>>,
@@ -1480,7 +1485,7 @@ fn on_stage_press(
     let Ok(stage) = stages.get(host.stage) else {
         return;
     };
-    let cursor = event.pointer_location.position / ui_scale.0;
+    let cursor = event.pointer.position / ui_scale.0;
     let pick = hit_at(
         cursor,
         host,
@@ -1535,7 +1540,7 @@ fn on_stage_press(
 /// What the drop means is decided by what is under the cursor; see
 /// [`crate::ui_asset_drop::classify_drop`].
 fn on_stage_asset_drop(
-    mut event: On<Pointer<DragDrop>>,
+    mut event: On<PointerDragDrop>,
     ui_scale: Res<UiScale>,
     overlays: Query<&UiSelectionOverlay>,
     hosts: Query<(Entity, &Viewport2dPanelHost)>,
@@ -1568,7 +1573,7 @@ fn on_stage_asset_drop(
     let Ok(stage) = stages.get(host.stage) else {
         return;
     };
-    let cursor = event.pointer_location.position / ui_scale.0;
+    let cursor = event.pointer.position / ui_scale.0;
     let under = match hit_at(
         cursor,
         host,
@@ -1600,7 +1605,7 @@ fn on_stage_asset_drop(
 /// carrying a count of one. A press on a resize handle counts too, since on
 /// a small node the handles leave nowhere else to press.
 fn on_stage_double_press(
-    event: On<Pointer<Press>>,
+    event: On<PointerPress>,
     ui_scale: Res<UiScale>,
     time: Res<Time>,
     overlays: Query<&UiSelectionOverlay>,
@@ -1635,7 +1640,7 @@ fn on_stage_double_press(
     let Ok(stage) = stages.get(host.stage) else {
         return;
     };
-    let cursor = event.pointer_location.position / ui_scale.0;
+    let cursor = event.pointer.position / ui_scale.0;
     let StagePick::Hit(entity) = hit_at(
         cursor,
         host,
@@ -1666,7 +1671,7 @@ fn on_stage_double_press(
 /// the same resolution the press does, on every pointer move. Nothing is
 /// tracked in `Interact`, and a running gesture clears it.
 fn on_stage_hover(
-    event: On<Pointer<Move>>,
+    event: On<PointerMove>,
     ui_scale: Res<UiScale>,
     manipulation: Res<UiManipulation>,
     overlays: Query<&UiSelectionOverlay>,
@@ -1694,7 +1699,7 @@ fn on_stage_hover(
         .then(|| stages.get(host.stage).ok())
         .flatten()
         .and_then(|stage| {
-            let cursor = event.pointer_location.position / ui_scale.0;
+            let cursor = event.pointer.position / ui_scale.0;
             match hit_at(
                 cursor,
                 host,
@@ -1719,7 +1724,7 @@ fn on_stage_hover(
 /// [`on_stage_hover`] only runs while the pointer is over a stage, so
 /// without this the last node it passed over stays outlined.
 fn on_stage_leave(
-    event: On<Pointer<Out>>,
+    event: On<PointerOut>,
     hosts: Query<&Viewport2dPanelHost>,
     mut hover: ResMut<UiHoverPreselect>,
 ) {
@@ -2106,7 +2111,7 @@ fn gesture_edges(
 }
 
 fn on_gesture_start(
-    mut event: On<Pointer<DragStart>>,
+    mut event: On<PointerDragStart>,
     parts: GestureTargets,
     mut commands: Commands,
 ) {
@@ -2571,7 +2576,7 @@ fn collect_other_nodes(
 /// Move or resize what the gesture picked up, every drag event. The primary
 /// is what snaps, and the rest of the selection moves by the delta it
 /// snapped to. See [`UiManipulation`].
-fn on_gesture_drag(mut event: On<Pointer<Drag>>, parts: GestureTargets, mut commands: Commands) {
+fn on_gesture_drag(mut event: On<PointerDrag>, parts: GestureTargets, mut commands: Commands) {
     let target = event.event_target();
     if gesture_edges(target, event.button, &parts).is_none() {
         return;
@@ -2766,7 +2771,7 @@ pub fn snap_to_pixel_grid(point: Vec2, grid: f32) -> Vec2 {
     (point / grid).round() * grid
 }
 
-fn on_gesture_end(mut event: On<Pointer<DragEnd>>, parts: GestureTargets, mut commands: Commands) {
+fn on_gesture_end(mut event: On<PointerDragEnd>, parts: GestureTargets, mut commands: Commands) {
     if gesture_edges(event.event_target(), event.button, &parts).is_none() {
         return;
     }
@@ -3321,19 +3326,19 @@ fn guide_takes_the_press(
 }
 
 /// Claim a press on a ruler or a guide, so the dock never sees it.
-fn on_guide_press(mut event: On<Pointer<Press>>, parts: GuideTargets, pointer: GuidePointer) {
+fn on_guide_press(mut event: On<PointerPress>, parts: GuideTargets, pointer: GuidePointer) {
     let target = event.event_target();
     let Some((_, axis, index)) = guide_gesture(target, event.button, &parts) else {
         return;
     };
-    let cursor = event.pointer_location.position / pointer.ui_scale.0;
+    let cursor = event.pointer.position / pointer.ui_scale.0;
     if guide_takes_the_press(&pointer, index.map(|_| target), axis, cursor) {
         event.propagate(false);
     }
 }
 
 fn on_guide_drag_start(
-    mut event: On<Pointer<DragStart>>,
+    mut event: On<PointerDragStart>,
     parts: GuideTargets,
     pointer: GuidePointer,
     mut commands: Commands,
@@ -3342,7 +3347,7 @@ fn on_guide_drag_start(
     let Some((host, axis, index)) = guide_gesture(target, event.button, &parts) else {
         return;
     };
-    let cursor = event.pointer_location.position / pointer.ui_scale.0;
+    let cursor = event.pointer.position / pointer.ui_scale.0;
     if !guide_takes_the_press(&pointer, index.map(|_| target), axis, cursor) {
         return;
     }
@@ -3399,7 +3404,7 @@ fn begin_guide_drag(
 }
 
 fn on_guide_drag(
-    mut event: On<Pointer<Drag>>,
+    mut event: On<PointerDrag>,
     parts: GuideTargets,
     ui_scale: Res<UiScale>,
     mut commands: Commands,
@@ -3408,7 +3413,7 @@ fn on_guide_drag(
         return;
     }
     event.propagate(false);
-    let cursor = event.pointer_location.position / ui_scale.0;
+    let cursor = event.pointer.position / ui_scale.0;
     commands.queue(move |world: &mut World| {
         world.resource_scope(|world, mut manipulation: Mut<GuideManipulation>| {
             let Some(drag) = manipulation.active.as_mut() else {
@@ -3428,7 +3433,7 @@ fn on_guide_drag(
     });
 }
 
-fn on_guide_drag_end(mut event: On<Pointer<DragEnd>>, parts: GuideTargets, mut commands: Commands) {
+fn on_guide_drag_end(mut event: On<PointerDragEnd>, parts: GuideTargets, mut commands: Commands) {
     if guide_gesture(event.event_target(), event.button, &parts).is_none() {
         return;
     }

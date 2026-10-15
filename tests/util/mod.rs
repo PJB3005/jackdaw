@@ -91,17 +91,8 @@ fn ambient_app_reading(assets: bevy::asset::AssetPlugin) -> App {
             // backend avoids attempts to connect to host ALSA/JACK services,
             // which can otherwise block an otherwise-complete test process.
             .disable::<bevy::audio::AudioPlugin>()
-            .disable::<WinitPlugin>()
-            .disable::<bevy::dev_tools::render_debug::RenderDebugOverlayPlugin>(),
-    )
-    // Ambient plugins moved to the binary entry point (matches
-    // the launcher's `src/main.rs` and the static template's
-    // `editor.rs.template`). Mirror that here so the editor's
-    // internal `debug_assert!`s for `PhysicsSchedulePlugin` and
-    // `EnhancedInputPlugin` find what they expect.
-    .add_plugins(bevy_enhanced_input::prelude::EnhancedInputPlugin);
-    #[cfg(feature = "physics")]
-    app.add_plugins(avian3d::prelude::PhysicsPlugins::default());
+            .disable::<WinitPlugin>(),
+    );
     app
 }
 
@@ -111,13 +102,16 @@ fn ambient_app_reading(assets: bevy::asset::AssetPlugin) -> App {
 #[allow(dead_code, reason = "shared across test binaries")]
 pub fn add_editor_plugins(app: &mut App) {
     app.add_plugins(JackdawEditorPlugins::default());
-    // Bevy 0.19's component-sync hooks (`On<Remove, SyncToRenderWorld>`) read the
+    // Bevy's component-sync hooks (`On<Remove<SyncToRenderWorld>>`) read the
     // main-world `PendingSyncEntity` resource that `SyncWorldPlugin` installs.
     // The headless `RenderPlugin` (no backend) never spins up the render world,
     // so that plugin isn't pulled in here; add it explicitly so despawning a
     // sync-component entity (e.g. through `scene.new`) doesn't panic.
-    if !app.is_plugin_added::<bevy::render::sync_world::SyncWorldPlugin>() {
-        app.add_plugins(bevy::render::sync_world::SyncWorldPlugin);
+    if !app.is_plugin_added::<bevy::extract::sync_world::SyncWorldPlugin<bevy::render::RenderApp>>()
+    {
+        app.add_plugins(bevy::extract::sync_world::SyncWorldPlugin::<
+            bevy::render::RenderApp,
+        >::default());
     }
 }
 
@@ -218,7 +212,7 @@ pub fn fixed_frame_clock(app: &mut App) {
 /// This helper runs the usual `register -> finish -> first-update` dance, then
 /// force-enables the extension explicitly so `app.world_mut().operator(id)`
 /// can find it. It also ticks one more frame so any setup observers (operator
-/// index, BEI context attachment) have settled before the caller runs
+/// index, input context attachment) have settled before the caller runs
 /// assertions.
 #[expect(clippy::allow_attributes, reason = "Some tests use this")]
 #[allow(

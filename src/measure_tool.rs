@@ -65,22 +65,20 @@ struct MeasureLabel;
 // -- Extension registration --
 
 pub(crate) fn add_to_extension(ctx: &mut ExtensionContext) {
-    use crate::core_extension::CoreExtensionInputContext;
-    use bevy_enhanced_input::prelude::Press;
+    use jackdaw_api_internal::lifecycle::OperatorAction;
+    use jackdaw_input::{ActionOf, Condition, bindings};
 
-    // Deferred: condition is not bare Press::default() (key + Press).
-    ctx.entity_mut()
-        .with_related::<ActionOf<CoreExtensionInputContext>>((
-            Action::<MeasureDistanceOp>::new(),
-            bindings![(KeyCode::KeyM, Press::default())],
-        ));
+    // Deferred: condition is not a bare press (key + Press).
+    ctx.entity_mut().with_related::<ActionOf>((
+        OperatorAction(MeasureDistanceOp::ID),
+        bindings![(KeyCode::KeyM, Condition::Press)],
+    ));
 
-    // Deferred: condition is not bare Press::default() (mouse button + Press).
-    ctx.entity_mut()
-        .with_related::<ActionOf<CoreExtensionInputContext>>((
-            Action::<ConfirmMeasureDistanceOp>::new(),
-            bindings![(MouseButton::Left, Press::default())],
-        ));
+    // Deferred: condition is not a bare press (mouse button + Press).
+    ctx.entity_mut().with_related::<ActionOf>((
+        OperatorAction(ConfirmMeasureDistanceOp::ID),
+        bindings![(MouseButton::Left, Condition::Press)],
+    ));
 
     ctx.register_operator::<MeasureDistanceOp>()
         .register_operator::<ConfirmMeasureDistanceOp>()
@@ -211,8 +209,8 @@ fn confirm_measure_distance(
 /// The nearest scene geometry under `ray`.
 ///
 /// Editor entities are filtered out: the tool reports distances in the authored
-/// world, and the editor draws meshes into it that are not part of it. The
-/// navmesh overlay is a sheet floating above the ground it describes, so
+/// world, and the editor draws meshes into it that are not part of it. An
+/// overlay such as a baked navmesh floats above the ground it describes, so
 /// measuring against it would answer with the drawing rather than the terrain.
 fn raycast_closest_point(
     ray: Ray3d,

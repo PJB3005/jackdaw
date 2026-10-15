@@ -16,18 +16,21 @@ use bevy::{
     prelude::*,
     text::{EditableText, EditableTextSystems, TextCursorStyle, TextEdit},
     ui::Checked,
-    ui_widgets::{Button, Checkbox, RadioButton, RadioGroup, Slider, SliderValue, ValueChange},
+    ui_widgets::{
+        Button, Checkbox, RadioButton, RadioGroup, Slider, SliderValue, TextInput, ValueChange,
+    },
 };
 
 /// The text an authored input holds, in a form a scene document can carry.
 ///
 /// `bevy_text::EditableText` is not `Reflect`, so this reflectable half is what
 /// a document and a binding see; [`AuthoredWidgetPlugin`] keeps the two in
-/// step. [`TextCursorStyle`] is required because `bevy_ui_render`'s
-/// editable-text extract queries it without an `Option`.
+/// step. [`TextInput`] makes the buffer editable, and [`TextCursorStyle`] is
+/// required because `bevy_ui_render`'s editable-text extract queries it
+/// without an `Option`.
 #[derive(Component, Reflect, Default, Debug, Clone, PartialEq, Eq)]
 #[reflect(Component, Default)]
-#[require(EditableText, TextCursorStyle)]
+#[require(TextInput, TextCursorStyle)]
 pub struct TextValue(
     /// The text the input holds.
     pub String,
@@ -233,7 +236,9 @@ impl Plugin for AuthoredWidgetPlugin {
                 .chain()
                 .in_set(AuthoredTextSystems)
                 .after(EditableTextSystems)
-                .before(bevy::ui::UiSystems::Layout),
+                // Bevy 0.20 applies text edits after layout and lays
+                // editable text out in `PostLayout`.
+                .before(bevy::ui::UiSystems::PostLayout),
         );
         app.add_systems(
             PostUpdate,
@@ -277,7 +282,7 @@ impl Plugin for AuthoredWidgetPlugin {
         if app
             .world()
             .get_resource::<UiTheme>()
-            .is_none_or(|theme| theme.0.color.is_empty())
+            .is_none_or(|theme| theme.0.token_assignments.is_empty())
         {
             app.insert_resource(UiTheme(create_dark_theme()));
         }
@@ -325,8 +330,8 @@ pub fn register_widget_defaults(app: &mut App) {
 
     #[cfg(feature = "feathers")]
     {
-        use bevy::feathers::cursor::EntityCursor;
         use bevy::feathers::theme::ThemedText;
+        use bevy::picking::cursor::EntityCursor;
 
         app.register_type::<ThemedText>()
             .register_type_data::<ThemedText, ReflectDefault>();
@@ -478,7 +483,7 @@ fn authored_radio_self_update(
         return;
     };
     let chosen = change.value;
-    let members: Vec<Entity> = radios.iter_many(children).collect();
+    let members: Vec<Entity> = radios.iter_many(children).flatten().collect();
     commands.queue(move |world: &mut World| {
         for radio in members {
             set_checked(world, radio, radio == chosen);
@@ -1359,8 +1364,11 @@ mod tests {
         use bevy::feathers::theme::{ThemeProps, UiTheme};
         use bevy::feathers::tokens;
 
-        let mut theirs = ThemeProps::default();
-        theirs.color.insert(tokens::BUTTON_BG, Color::WHITE);
+        let theirs =
+            ThemeProps::new_non_contextual(bevy::platform::collections::HashMap::from([(
+                tokens::BUTTON_BG,
+                Color::WHITE,
+            )]));
 
         let mut app = App::new();
         app.insert_resource(UiTheme(theirs));

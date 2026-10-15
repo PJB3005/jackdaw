@@ -13,7 +13,6 @@ use jackdaw_editor::prelude::*;
 fn main() -> AppExit {
     App::new()
         .add_plugins(DefaultPlugins.set(editor_window_plugin()))
-        .add_plugins((EnhancedInputPlugin, PhysicsPlugins::default()))
         .add_plugins(JackdawEditorPlugins::default())
         .run()
 }
@@ -54,21 +53,65 @@ loads it. **Rebuild Project** builds and loads it again after a change, and so
 does `jd build` in a terminal while the project is open, unless **Hot Reload** is
 turned off in the File menu.
 
-Runtime extensions deliberately cannot install extension-owned Bevy component
-metadata or reflected Rust types. Use a custom editor build when that level of
-access is required.
+### Adding Bevy plugins at launch
+
+`register` runs against a live world, so it cannot add plugin groups,
+schedules or system sets. An extension that needs them returns a Bevy plugin
+from `app_plugin`, and the editor adds it to its `App` before the app runs:
+
+```rust
+use bevy::prelude::*;
+use jackdaw_extension::prelude::*;
+
+#[derive(Default)]
+pub struct VehicleTools;
+
+impl JackdawExtension for VehicleTools {
+    fn id(&self) -> String { "example.vehicle-tools".into() }
+
+    fn app_plugin(&self) -> Option<Box<dyn Plugin>> {
+        Some(Box::new(|app: &mut App| {
+            app.add_systems(FixedUpdate, simulate_suspension);
+        }))
+    }
+
+    fn register(&self, registrar: &mut ExtensionRegistrar<'_>) {
+        // windows, operators and menus that use what the plugin added
+    }
+}
+```
+
+The plugin is added only for extensions enabled when the editor starts, both
+built-in ones and installed bundles. A plugin cannot be removed again, so:
+
+- Installing or enabling such an extension while the editor runs marks it
+  **Restart required** in the Extensions dialog. It activates on the next
+  launch.
+- Disabling it removes its windows and operators at once; its plugin keeps
+  running until the editor restarts.
+- Loading a new build of it reloads live when its plugin keeps the same
+  `Plugin::name`. The plugin added at launch stays in place; a renamed or newly
+  added plugin waits for a restart. A closure plugin is named after the
+  function that contains it.
+- An editor build of the open project cannot add a plugin at launch. Install
+  the extension as a bundle once, restart, and later builds that keep the
+  plugin reload live.
+
+Guard plugins another extension may already have added, such as a physics
+engine, with `app.is_plugin_added::<T>()`. `jd extension pack` records `requires_restart`
+in the bundle manifest when the extension defines `app_plugin`, so tools can
+show the restart without loading the library.
 
 ### Input types
 
-`jackdaw_api::prelude` re-exports only the `bevy_enhanced_input` items an
-extension needs to declare, bind and observe actions: `InputAction`, `Action`,
-`ActionOf`, `Actions`, `actions!`, `bindings!`, `Binding`, `Bindings`,
-`ModKeys`, `InputModKeys`, the `Press`, `Release`, `Hold`, `Tap`, `Chord` and
-`BlockBy` conditions, the `Start`, `Ongoing`, `Fire`, `Complete` and `Cancel`
-events, and `TriggerState`. Before 0.20 it re-exported the whole
-`bevy_enhanced_input` prelude. If an extension used anything else from it, such
-as an input modifier or a preset, add `bevy_enhanced_input` to its
-dependencies and import the item from `bevy_enhanced_input::prelude`.
+Bind an operator with `bind_operator_host` and a `PresetInput`; the keymap
+attaches the binding and the user can rebind it. An extension that declares
+its own actions takes the types from `jackdaw_api::input`: an entity with
+`InputContext` holds actions (`ActionOf`), each action holds bindings
+(`BindingOf`) with a `Condition`, and a firing action triggers `Fire` on its
+entity. Since 0.20 the editor no longer uses `bevy_enhanced_input`, and
+`jackdaw_api::prelude` no longer re-exports it; operators no longer implement
+`InputAction`.
 
 ## Signed bundles
 

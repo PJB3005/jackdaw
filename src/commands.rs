@@ -915,7 +915,7 @@ impl RemoveComponent {
                     let entity_ref = world.get_entity(entity).ok()?;
                     reflect_component.reflect(entity_ref)
                 })
-                .map(PartialReflect::to_dynamic)
+                .and_then(|value| value.to_dynamic().ok())
         } else {
             None
         };
@@ -1309,13 +1309,21 @@ pub(crate) fn collect_entity_ids(world: &World, entity: Entity, out: &mut Vec<En
 /// Rebuild a `DynamicWorld` by copying its entity data (since `DynamicWorld` doesn't impl Clone).
 pub(crate) fn snapshot_rebuild(scene: &DynamicWorld) -> DynamicWorld {
     DynamicWorld {
-        resources: scene.resources.iter().map(|r| r.to_dynamic()).collect(),
+        resources: scene
+            .resources
+            .iter()
+            .filter_map(|r| r.to_dynamic().ok())
+            .collect(),
         entities: scene
             .entities
             .iter()
             .map(|e| bevy::world_serialization::DynamicEntity {
                 entity: e.entity,
-                components: e.components.iter().map(|c| c.to_dynamic()).collect(),
+                components: e
+                    .components
+                    .iter()
+                    .filter_map(|c| c.to_dynamic().ok())
+                    .collect(),
             })
             .collect(),
     }
@@ -1646,7 +1654,7 @@ pub(crate) fn apply_json_field_to_ecs(
         // Full component replacement via TypedReflectDeserializer.
         // Always use `insert` (not `apply`)  -- this handles:
         //  - Immutable components like RigidBody (apply panics on immutable)
-        //  - Components removed externally (e.g. avian removing ColliderConstructor)
+        //  - Components removed externally (e.g. a one-shot constructor its plugin consumed)
         //  - Normal mutable components (insert replaces in-place)
         let deserializer =
             bevy::reflect::serde::TypedReflectDeserializer::new(registration, &registry);
@@ -1693,7 +1701,9 @@ fn reset_ecs_field_to_default(
     let Ok(default_field) = default_instance.reflect_path(field_path) else {
         return;
     };
-    let default_field = default_field.to_dynamic();
+    let Ok(default_field) = default_field.to_dynamic() else {
+        return;
+    };
 
     let Some(component) = reflect_component.reflect_mut(world.entity_mut(entity)) else {
         return;
@@ -3152,8 +3162,6 @@ mod bsn_doc_coherence_tests {
         app.init_resource::<crate::snapping::SnapSettings>();
         app.init_resource::<crate::view_modes::ViewModeSettings>();
         app.init_resource::<crate::viewport_overlays::OverlaySettings>();
-        #[cfg(feature = "physics")]
-        app.init_resource::<jackdaw_avian_integration::PhysicsOverlayConfig>();
         app.register_type::<Name>();
         app.register_type::<Transform>();
         app.register_type::<jackdaw_scene_types::SceneRootTag>();

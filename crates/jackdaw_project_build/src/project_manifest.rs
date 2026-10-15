@@ -6,9 +6,12 @@
 //! and are parsed there (`jackdaw_pie_protocol`); unknown keys are
 //! ignored on both sides, so the two readers coexist.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+
+use crate::modules::{GameDependencies, ModuleCatalog, ModuleSet};
 
 /// File name at the project root.
 pub const FILE_NAME: &str = "jackdaw.toml";
@@ -28,6 +31,18 @@ pub struct VersionPins {
     /// The Bevy minor that jackdaw targeted then, e.g. `0.19`.
     #[serde(default)]
     pub bevy: Option<String>,
+    /// The editor's update channel: `stable` (also when absent) or
+    /// `bleeding-edge`. A stable project opens in the newest installed
+    /// patch of its version's line.
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// The nightly a Bleeding Edge project opens with, e.g.
+    /// `nightly-2026-10-09`.
+    #[serde(default)]
+    pub build: Option<String>,
+    /// The Bevy commit that nightly was built against.
+    #[serde(default)]
+    pub bevy_rev: Option<String>,
 }
 
 /// The subset of `jackdaw.toml` the build pipeline reads.
@@ -49,6 +64,15 @@ pub struct ProjectManifest {
     /// from somewhere else.
     #[serde(default)]
     pub assets_dir: Option<PathBuf>,
+    /// The `[modules]` table: which optional modules the project uses.
+    /// Absent in a project set up before modules were recorded.
+    #[serde(default)]
+    pub modules: Option<BTreeMap<String, bool>>,
+    /// The `[extensions]` table: editor extensions this project turns on
+    /// or off over the global list, by extension id. Absent means the
+    /// global list applies unchanged.
+    #[serde(default)]
+    pub extensions: Option<BTreeMap<String, bool>>,
 }
 
 impl ProjectManifest {
@@ -85,6 +109,28 @@ impl ProjectManifest {
         }
     }
 
+    /// The modules the project at `root` uses: its `[modules]` table, or
+    /// for a project with none, what its Cargo manifest already declares.
+    /// Requirements are included either way.
+    pub fn modules(&self, root: &Path) -> ModuleSet {
+        match &self.modules {
+            Some(table) => crate::modules::enabled_in(table),
+            None => ModuleCatalog::builtin().detect(&self.game_dependencies(root)),
+        }
+    }
+
+    /// What the game package of the project at `root` declares that bears
+    /// on modules.
+    pub fn game_dependencies(&self, root: &Path) -> GameDependencies {
+        let package_dir = self
+            .package
+            .as_deref()
+            .map(|name| root.join(name))
+            .filter(|dir| dir.join("Cargo.toml").is_file())
+            .unwrap_or_else(|| root.to_path_buf());
+        GameDependencies::read(&package_dir, root)
+    }
+
     /// Whether this project has been set up for jackdaw at all.
     pub fn exists(root: &Path) -> bool {
         path(root).is_file()
@@ -93,6 +139,32 @@ impl ProjectManifest {
 
 pub fn path(root: &Path) -> PathBuf {
     root.join(FILE_NAME)
+}
+
+/// `jackdaw_toml` with its `[extensions]` table replaced by `overrides`,
+/// leaving the rest of the file as written. Empty `overrides` removes the
+/// table.
+pub fn with_extensions(
+    jackdaw_toml: &str,
+    overrides: &BTreeMap<String, bool>,
+) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = jackdaw_toml
+        .parse()
+        .map_err(|error: toml_edit::TomlError| error.to_string())?;
+    if overrides.is_empty() {
+        doc.remove("extensions");
+        return Ok(doc.to_string());
+    }
+    let mut table = toml_edit::Table::new();
+    table.decor_mut().set_prefix(
+        "\n# Editor extensions turned on or off for this project, over the\n\
+         # global list. Change them from the launcher's Extensions page.\n",
+    );
+    for (id, enabled) in overrides {
+        table.insert(id, toml_edit::value(*enabled));
+    }
+    doc.insert("extensions", toml_edit::Item::Table(table));
+    Ok(doc.to_string())
 }
 
 fn is_inside_root(dir: &Path) -> bool {
@@ -259,7 +331,8 @@ pub fn pins_toml_for_bevy(bevy: &str) -> String {
          # build failure.\n\
          [jackdaw]\n\
          version = \"{}\"\n\
-         bevy = \"{bevy}\"\n",
+         bevy = \"{bevy}\"\n\
+         channel = \"stable\"\n",
         crate::VERSION,
     )
 }
@@ -319,6 +392,48 @@ instances = 2
     }
 
     #[test]
+    fn the_editor_channel_and_build_are_read_from_the_jackdaw_table() {
+        let manifest: ProjectManifest = toml::from_str(
+            r#"
+[jackdaw]
+version = "0.21.0-dev"
+bevy = "main"
+channel = "bleeding-edge"
+build = "nightly-2026-10-09"
+bevy_rev = "3f2a1c9e"
+"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.jackdaw.channel.as_deref(), Some("bleeding-edge"));
+        assert_eq!(
+            manifest.jackdaw.build.as_deref(),
+            Some("nightly-2026-10-09")
+        );
+        assert_eq!(manifest.jackdaw.bevy_rev.as_deref(), Some("3f2a1c9e"));
+
+        let written: ProjectManifest = toml::from_str(&pins_toml()).unwrap();
+        assert_eq!(written.jackdaw.channel.as_deref(), Some("stable"));
+    }
+
+    #[test]
+    fn extension_overrides_are_written_to_their_own_table_and_read_back() {
+        let original = "plugin = \"GamePlugin\"\n\n[jackdaw]\nversion = \"0.20.0\"\n";
+        let overrides = BTreeMap::from([
+            ("acme.dialogue".to_string(), true),
+            ("grass".to_string(), false),
+        ]);
+        let written = with_extensions(original, &overrides).unwrap();
+        assert!(written.starts_with(original), "{written}");
+        let manifest: ProjectManifest = toml::from_str(&written).unwrap();
+        assert_eq!(manifest.extensions, Some(overrides));
+        assert_eq!(manifest.plugin.as_deref(), Some("GamePlugin"));
+
+        let cleared = with_extensions(&written, &BTreeMap::new()).unwrap();
+        let manifest: ProjectManifest = toml::from_str(&cleared).unwrap();
+        assert_eq!(manifest.extensions, None);
+    }
+
+    #[test]
     fn a_manifest_without_pins_is_unpinned() {
         assert_eq!(compare_pins(&VersionPins::default()), PinStatus::Unpinned);
     }
@@ -328,6 +443,7 @@ instances = 2
         let pins = VersionPins {
             version: Some(crate::VERSION.to_string()),
             bevy: Some(crate::BEVY_VERSION.to_string()),
+            ..VersionPins::default()
         };
         assert_eq!(compare_pins(&pins), PinStatus::Match);
     }
@@ -337,12 +453,14 @@ instances = 2
         let bevy = VersionPins {
             version: Some(crate::VERSION.to_string()),
             bevy: Some("0.14".to_string()),
+            ..VersionPins::default()
         };
         assert!(compare_pins(&bevy).is_blocking());
 
         let jackdaw = VersionPins {
             version: Some("0.0.1".to_string()),
             bevy: Some(crate::BEVY_VERSION.to_string()),
+            ..VersionPins::default()
         };
         let status = compare_pins(&jackdaw);
         assert!(!status.is_blocking());
@@ -399,6 +517,40 @@ instances = 2
             compare_project(&dir, &ProjectManifest::default()),
             PinStatus::Unpinned
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_modules_table_reads_back_as_written() {
+        let text = format!(
+            "{}\n{}",
+            pins_toml(),
+            crate::modules::modules_toml(&["navmesh".to_string()].into())
+        );
+        let manifest: ProjectManifest = toml::from_str(&text).unwrap();
+        let modules = manifest.modules.as_ref().expect("a modules table");
+        assert_eq!(modules.get("navmesh"), Some(&true));
+        assert_eq!(modules.get("multiplayer"), Some(&false));
+        let enabled: Vec<String> = manifest
+            .modules(Path::new("/nowhere"))
+            .into_iter()
+            .collect();
+        assert_eq!(enabled, ["navmesh"]);
+    }
+
+    /// A project set up before `[modules]` existed keeps working: what its
+    /// Cargo manifest already enables is what it uses.
+    #[test]
+    fn without_a_modules_table_the_runtime_features_decide() {
+        let dir = project(
+            "modules",
+            "[package]\nname = \"g\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+             jackdaw_runtime = { version = \"0.19\", features = [\"physics\", \"terrain\", \"pie\"] }\n",
+        );
+        let manifest: ProjectManifest = toml::from_str(&pins_toml()).unwrap();
+        assert!(manifest.modules.is_none());
+        let enabled: Vec<String> = manifest.modules(&dir).into_iter().collect();
+        assert_eq!(enabled, ["physics"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

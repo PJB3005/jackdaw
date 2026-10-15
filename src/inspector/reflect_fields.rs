@@ -1622,14 +1622,12 @@ fn hex_input_scene() -> impl Scene {
         Node { flex_grow: 0.0 }
         on(seed_string_field)
         Children [
-            (
-                @FeathersTextInput {
-                    @visible_width: 10f32,
-                    @max_characters: 9usize,
-                }
-                on(hex_input_on_enter_key)
-                on(hex_input_on_focus_lost)
-            )
+            @FeathersTextInput {
+                @visible_width: 10f32,
+                @max_characters: 9usize,
+            }
+            on(hex_input_on_enter_key)
+            on(hex_input_on_focus_lost)
         ]
     }
 }
@@ -2206,20 +2204,18 @@ fn spawn_entity_link(commands: &mut Commands, parent: Entity, target: Entity, la
         TextColor(tokens::TEXT_ACCENT),
         ChildOf(parent),
         observe(
-            move |_: On<Pointer<Click>>,
-                  mut commands: Commands,
-                  mut selection: ResMut<Selection>| {
+            move |_: On<PointerClick>, mut commands: Commands, mut selection: ResMut<Selection>| {
                 selection.select_single(&mut commands, target);
             },
         ),
         observe(
-            move |hover: On<Pointer<Over>>, mut q: Query<&mut TextColor>| {
+            move |hover: On<PointerOver>, mut q: Query<&mut TextColor>| {
                 if let Ok(mut c) = q.get_mut(hover.event_target()) {
                     c.0 = tokens::TEXT_ACCENT_HOVER;
                 }
             },
         ),
-        observe(move |out: On<Pointer<Out>>, mut q: Query<&mut TextColor>| {
+        observe(move |out: On<PointerOut>, mut q: Query<&mut TextColor>| {
             if let Ok(mut c) = q.get_mut(out.event_target()) {
                 c.0 = tokens::TEXT_ACCENT;
             }
@@ -2410,7 +2406,7 @@ fn string_field_scene() -> impl Scene {
 /// inspector refresh does not re-seed it. Fires on the container after the
 /// scene tree (including the child text entry) has spawned.
 fn seed_string_field(
-    inserted: On<Insert, PendingFieldText>,
+    inserted: On<Insert<PendingFieldText>>,
     q_children: Query<&Children>,
     q_pending: Query<&PendingFieldText>,
     mut q_text: Query<&mut EditableText>,

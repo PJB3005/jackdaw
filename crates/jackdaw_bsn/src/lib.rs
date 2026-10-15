@@ -1,10 +1,10 @@
 //! Reader, editor document, and writer for the `.bsn` scene format.
 //!
-//! The parser builds the editor document ([`SceneBsnAst`]) directly from
-//! `.bsn` source text; there is no separate parse-time representation. The
-//! apply path resolves the document to ECS components, and the emitter
-//! writes the document back to `.bsn` text. The grammar rules track the
-//! dynamic-BSN work in bevyengine/bevy#23576.
+//! [`syntax`] reads `.bsn` source text into a syntax tree, mirroring
+//! `bevy_bsn` from bevyengine/bevy#26043; [`parse`] turns that tree into the
+//! editor document ([`SceneBsnAst`]). The apply path resolves the document to
+//! ECS components, and the emitter writes the document back to `.bsn` text
+//! in Bevy 0.20 syntax.
 
 pub mod apply;
 pub mod binary;
@@ -15,9 +15,11 @@ pub mod emitter;
 pub mod file;
 pub mod header;
 pub mod loader;
+pub mod migrate;
 pub mod parse;
 pub mod retired;
 pub mod sync;
+pub mod syntax;
 pub mod writer;
 
 pub use catalog::{
@@ -53,7 +55,9 @@ pub use document::{
     clone_subtree_into, component_to_bsn_patch, component_to_bsn_patch_with_assets,
     is_enum_variant_of, patch_type_path, type_paths_include,
 };
-pub use emitter::{emit_entities, emit_entity, emit_entity_without_children, emit_scene};
+pub use emitter::{
+    emit_entities, emit_entity, emit_entity_without_children, emit_scene, emit_value_text,
+};
 pub use loader::{BsnLoadError, parse_bsn_text};
 pub use retired::{RETIRED_UI_PREFIX, RetiredUiComponents, reject_retired_ui_components};
 

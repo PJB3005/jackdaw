@@ -508,11 +508,12 @@ fn gltf_loader(app: &App) -> Option<GltfLoader> {
         default_convert_coordinates: plugin.convert_coordinates,
         extensions: world.get_resource::<GltfExtensionHandlers>()?.0.clone(),
         default_skinned_mesh_bounds_policy: plugin.skinned_mesh_bounds_policy,
+        default_mesh_compression: plugin.mesh_compression.clone(),
     })
 }
 
 fn index_placed_model(
-    insert: On<Insert, GltfSource>,
+    insert: On<Insert<GltfSource>>,
     sources: Query<&GltfSource>,
     mut index: ResMut<ModelLodIndex>,
 ) {
@@ -526,7 +527,7 @@ fn index_placed_model(
 }
 
 fn unindex_placed_model(
-    replace: On<Discard, GltfSource>,
+    replace: On<Discard<GltfSource>>,
     sources: Query<&GltfSource>,
     mut index: ResMut<ModelLodIndex>,
 ) {

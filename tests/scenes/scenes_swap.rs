@@ -459,7 +459,9 @@ fn scene_new_appends_an_untitled_tab() {
             .disable::<WinitPlugin>(),
     );
     app.add_plugins(jackdaw_scene_types::SceneTypesPlugin::default());
-    app.add_plugins(bevy::render::sync_world::SyncWorldPlugin);
+    app.add_plugins(bevy::extract::sync_world::SyncWorldPlugin::<
+        bevy::render::RenderApp,
+    >::default());
     app.init_resource::<jackdaw::scenes::Scenes>();
     app.init_resource::<jackdaw::commands::CommandHistory>();
     app.init_resource::<jackdaw_bsn::SceneBsnAst>();
@@ -515,7 +517,9 @@ fn scene_open_dedupes_by_path() {
             .disable::<WinitPlugin>(),
     );
     app.add_plugins(jackdaw_scene_types::SceneTypesPlugin::default());
-    app.add_plugins(bevy::render::sync_world::SyncWorldPlugin);
+    app.add_plugins(bevy::extract::sync_world::SyncWorldPlugin::<
+        bevy::render::RenderApp,
+    >::default());
     app.init_resource::<jackdaw::scenes::Scenes>();
     app.init_resource::<jackdaw::commands::CommandHistory>();
     app.init_resource::<jackdaw_bsn::SceneBsnAst>();
@@ -961,7 +965,7 @@ fn swap_does_not_keep_a_jsn_scene_snapshot_field() {
         view_state: jackdaw::scenes::ViewState::default(),
         history: jackdaw::commands::CommandHistory::default(),
         terrain_data_store: jackdaw::terrain::TerrainDataStore::default(),
-        navmesh: jackdaw::terrain::navmesh_bake::TabNavmesh::default(),
+        scene_resources: Default::default(),
         history_depth_at_last_check: 0,
         refusal: None,
     };
@@ -1119,7 +1123,9 @@ fn scene_open_flags_dirty_when_ids_need_migration() {
             .disable::<WinitPlugin>(),
     );
     app.add_plugins(jackdaw_scene_types::SceneTypesPlugin::default());
-    app.add_plugins(bevy::render::sync_world::SyncWorldPlugin);
+    app.add_plugins(bevy::extract::sync_world::SyncWorldPlugin::<
+        bevy::render::RenderApp,
+    >::default());
     app.init_resource::<jackdaw::scenes::Scenes>();
     app.init_resource::<jackdaw::commands::CommandHistory>();
     app.init_resource::<jackdaw_bsn::SceneBsnAst>();
@@ -1459,7 +1465,7 @@ fn activating_a_tab_holding_retired_ui_components_spawns_nothing() {
 bevy_ecs::hierarchy::Children [
     #Overlay
     jackdaw_ui::UiCanvas
-    ,
+    --
     #World
     bevy_transform::components::transform::Transform
 ]
@@ -1501,7 +1507,7 @@ fn document_inheriting_from(base: &std::path::Path) -> jackdaw_bsn::SceneBsnAst 
         r#"bevy_ecs::hierarchy::Children [
     jackdaw::prefab::components::IsA {{ source: "{}", deleted: [] }}
     jackdaw::prefab::components::PrefabEntityId(0)
-    ,
+    --
     #World
     bevy_transform::components::transform::Transform
 ]

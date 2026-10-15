@@ -1,6 +1,6 @@
 use bevy::{
     ecs::system::SystemParam,
-    feathers::cursor::{EntityCursor, OverrideCursor},
+    picking::cursor::{EntityCursor, OverrideCursor},
     prelude::*,
     ui::UiGlobalTransform,
     window::{CursorGrabMode, CursorOptions, SystemCursorIcon},
@@ -354,7 +354,7 @@ pub(crate) fn handle_gizmo_hover(
 }
 
 /// LMB on a hovered gizmo axis dispatches `gizmo.drag`. Mouse-button
-/// gestures aren't expressible as BEI key bindings.
+/// gestures aren't expressible as key bindings.
 fn gizmo_drag_invoke_trigger(
     mouse: Res<ButtonInput<MouseButton>>,
     selection: Res<Selection>,

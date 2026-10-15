@@ -726,20 +726,17 @@ fn window_target(app: &mut App) -> bevy::camera::NormalizedRenderTarget {
 
 /// Drop `dragged` on `zone` with the pointer at `position`.
 fn drop_at(app: &mut App, zone: Entity, dragged: Entity, position: Vec2) {
-    use bevy::picking::events::DragDrop;
+    use bevy::picking::events::{Pointer, PointerDragDrop};
     use bevy::picking::pointer::{Location, PointerId};
 
     let target = window_target(app);
-    app.world_mut().trigger(bevy::picking::events::Pointer::new(
-        PointerId::Mouse,
-        Location { target, position },
-        DragDrop {
-            button: bevy::picking::pointer::PointerButton::Primary,
-            dropped: dragged,
-            hit: bevy::picking::backend::HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
-        },
-        zone,
-    ));
+    app.world_mut().trigger(PointerDragDrop {
+        entity: zone,
+        pointer: Pointer::new(PointerId::Mouse, Location { target, position }),
+        button: bevy::picking::pointer::PointerButton::Primary,
+        dropped: dragged,
+        hit: bevy::picking::backend::HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+    });
     for _ in 0..3 {
         app.update();
     }
@@ -750,7 +747,7 @@ fn drop_at(app: &mut App, zone: Entity, dragged: Entity, position: Vec2) {
 #[test]
 fn resting_a_drag_on_a_closed_row_opens_it() {
     use bevy::camera::{NormalizedRenderTarget, RenderTarget};
-    use bevy::picking::events::DragEnter;
+    use bevy::picking::events::{Pointer, PointerDragEnter};
     use bevy::picking::pointer::{Location, PointerId};
     use bevy::window::{PrimaryWindow, WindowRef};
     use jackdaw_widgets::tree_view::{TreeNodeExpanded, TreeRowContent};
@@ -796,19 +793,19 @@ fn resting_a_drag_on_a_closed_row_opens_it() {
     let target: NormalizedRenderTarget = RenderTarget::Window(WindowRef::Primary)
         .normalize(Some(window))
         .expect("the primary window normalizes");
-    app.world_mut().trigger(bevy::picking::events::Pointer::new(
-        PointerId::Mouse,
-        Location {
-            target,
-            position: Vec2::ZERO,
-        },
-        DragEnter {
-            button: bevy::picking::pointer::PointerButton::Primary,
-            dragged: Entity::PLACEHOLDER,
-            hit: bevy::picking::backend::HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
-        },
-        content,
-    ));
+    app.world_mut().trigger(PointerDragEnter {
+        entity: content,
+        pointer: Pointer::new(
+            PointerId::Mouse,
+            Location {
+                target,
+                position: Vec2::ZERO,
+            },
+        ),
+        button: bevy::picking::pointer::PointerButton::Primary,
+        dragged: Entity::PLACEHOLDER,
+        hit: bevy::picking::backend::HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
+    });
     app.update();
     assert!(
         !app.world()
@@ -905,9 +902,9 @@ fn the_drop_line_is_drawn_at_the_gap_it_marks_on_a_hidpi_screen() {
 }
 
 /// Ctrl+Up (Cmd+Up on macOS) reorders and nothing else. Pressed through the
-/// window's own key stream because the fault only exists there:
-/// `bevy_enhanced_input` matches a binding on the modifiers it names and
-/// ignores the rest, so the bare-arrow nudge answered Ctrl+Arrow too.
+/// window's own key stream because the fault only exists there: a binding
+/// matches on the modifiers it names and ignores the rest, so the bare-arrow
+/// nudge answered Ctrl+Arrow too.
 #[test]
 fn primary_up_reorders_without_nudging() {
     use bevy::window::{PrimaryWindow, WindowResolution};

@@ -23,7 +23,9 @@ fn main() -> ExitCode {
     match command {
         Some("new") => jackdaw_scaffold::run_new_cli(&args[1..]),
         Some("import") => jackdaw_scaffold::run_import_cli(&args[1..]),
-        Some("open") => jackdaw_scaffold::run_open_cli(&args[1..]),
+        Some("open") => jd::editor_cli::open_command(&args[1..]),
+        Some("editor") => jd::editor_cli::editor_command(&args[1..]),
+        Some("self") => jd::editor_cli::self_command(&args[1..]),
         Some("upgrade") => jackdaw_scaffold::run_upgrade_cli(&args[1..]),
         Some("export-terrain") => export_terrain(&args[1..]),
         Some("extension") => extension_command(&args[1..]),
@@ -59,16 +61,17 @@ struct CommandSpec {
 const SPECS: &[CommandSpec] = &[
     CommandSpec {
         name: "new",
-        flags: &["--extension", "--no-git"],
-        values: &["--path"],
-        usage: "jd new <name> [--extension] [--path <dir>] [--no-git]",
+        flags: &["--extension", "--no-git", "--no-modules"],
+        values: &["--path", "--modules"],
+        usage: "jd new <name> [--extension] [--path <dir>] [--no-git] \
+                [--modules <list> | --no-modules]",
     },
     CommandSpec {
         name: "import",
         flags: &["--apply", "--allow-bevy-mismatch"],
-        values: &["--package", "--plugin"],
+        values: &["--package", "--plugin", "--modules"],
         usage: "jd import [path] [--apply] [--package <name>] [--plugin <Type>] \
-                [--allow-bevy-mismatch]",
+                [--modules <list>] [--allow-bevy-mismatch]",
     },
     CommandSpec {
         name: "open",
@@ -233,13 +236,18 @@ fn print_usage() {
          new <name>                 Create a Jackdaw project\n    \
            --extension                start from the editor-extension template\n    \
            --path <dir>               create it under <dir> instead of here\n    \
-           --no-git                   skip initialising a git repository\n  \
+           --no-git                   skip initialising a git repository\n    \
+           --modules <list>           the game's modules, e.g. navmesh,multiplayer\n    \
+           --no-modules               start the game with no modules\n  \
          import [path]              Preview integration for an existing Bevy project\n    \
            --apply                    write the previewed changes\n    \
            --package <name>           in a workspace, which member is the game\n    \
            --plugin <Type>            the game plugin type to record\n    \
+           --modules <list>           modules to add, e.g. navmesh,multiplayer\n    \
            --allow-bevy-mismatch      set up even if the project targets another Bevy\n  \
-         open [path]                Open a project in the Jackdaw GUI\n  \
+         open [path]                Open a project in the editor its jackdaw.toml pins\n  \
+         editor <command>           Install, list and remove editors (`jd editor --help`)\n  \
+         self update                Update jd to the newest stable release\n  \
          upgrade [path] [--apply]   Move a project to this Jackdaw's versions\n  \
          build [--project <path>]   Build project code for the editor\n  \
          run [--project <path>]     Build and run the game\n  \
@@ -537,6 +545,10 @@ fn pack_extension(args: &[String]) -> ExitCode {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
+    let requires_restart = project
+        .root
+        .as_deref()
+        .is_some_and(jackdaw_project_build::detect::extension_declares_app_plugin);
     let result = (|| {
         let library = std::fs::read(&library_path).map_err(|error| {
             jackdaw_package::PackageError::Io(format!("{}: {error}", library_path.display()))
@@ -554,6 +566,7 @@ fn pack_extension(args: &[String]) -> ExitCode {
             &library,
         );
         manifest.homepage = flag_value(args, "--homepage").or(project.homepage.clone());
+        manifest.requires_restart = requires_restart;
         let bundle = jd::sign::create_bundle(manifest, &library, &key)?;
         std::fs::write(&out_path, bundle)
             .map_err(|error| jackdaw_package::PackageError::Io(format!("{out_path}: {error}")))
@@ -568,6 +581,9 @@ fn pack_extension(args: &[String]) -> ExitCode {
                 jackdaw_package::host_target(),
                 jackdaw_package::host_sdk_abi()
             );
+            if requires_restart {
+                println!("  adds an App plugin: it activates when the editor next starts");
+            }
             println!(
                 "\nA bundle only installs into a jackdaw with the same ABI string, so publish \
                  one per target and jackdaw release."

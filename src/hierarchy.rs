@@ -5,10 +5,10 @@ use bevy::{
     prelude::*,
     ui::ui_transform::UiGlobalTransform,
 };
-use bevy_enhanced_input::prelude::{Press, *};
 use jackdaw_api::prelude::*;
 use jackdaw_api_internal::entity_icons::{EntityIconRegistry, registered_icon};
 use jackdaw_api_internal::keymap::PresetInput;
+use jackdaw_api_internal::lifecycle::OperatorAction;
 use jackdaw_feathers::{
     button::ButtonClickEvent,
     context_menu::spawn_context_menu,
@@ -16,6 +16,7 @@ use jackdaw_feathers::{
     tokens,
     tree_view::{ROW_BG, set_row_expand_toggle, tree_row_frame},
 };
+use jackdaw_input::{ActionOf, Condition, bindings};
 use jackdaw_widgets::context_menu::{ContextMenuAction, ContextMenuState};
 use jackdaw_widgets::monitors::{Mutation, NotifyChanged};
 use jackdaw_widgets::tree_view::{
@@ -939,7 +940,7 @@ fn drive_reveal_target(world: &mut World) {
 /// every container; the per-`(container, source)` `TreeIndex`
 /// keys keep them independent.
 fn on_root_entity_added(
-    trigger: On<Add, Transform>,
+    trigger: On<Add<Transform>>,
     mut new_roots: ResMut<NewRootRows>,
     tree_index: Res<TreeIndex>,
     editor_check: Query<(), Or<(With<EditorEntity>, With<EditorHidden>)>>,
@@ -957,7 +958,7 @@ fn on_root_entity_added(
 /// A UI scene root carries `UiTransform`, never `Transform`, so
 /// `on_root_entity_added` cannot fire for it. This mirrors it on `UiSceneRoot`.
 fn on_ui_root_added(
-    trigger: On<Add, UiSceneRoot>,
+    trigger: On<Add<UiSceneRoot>>,
     mut new_roots: ResMut<NewRootRows>,
     tree_index: Res<TreeIndex>,
     editor_check: Query<(), Or<(With<EditorEntity>, With<EditorHidden>)>>,
@@ -1040,7 +1041,7 @@ fn spawn_rows_for_new_roots(world: &mut World) {
 /// every Outliner panel. Also creates a row in each container if the
 /// entity is a visible root without one yet.
 fn on_name_changed(
-    trigger: On<Add, Name>,
+    trigger: On<Add<Name>>,
     mut commands: Commands,
     mut new_roots: ResMut<NewRootRows>,
     name_query: Query<&Name>,
@@ -1234,7 +1235,7 @@ fn refresh_all_row_chevrons(world: &mut World) {
 
 /// Re-derive the glyph whenever a component that decides it appears: the
 /// component can land after the row does, leaving the generic dot behind.
-fn refresh_icon_on_add<C: Component>(trigger: On<Add, C>, mut commands: Commands) {
+fn refresh_icon_on_add<C: Component>(trigger: On<Add<C>>, mut commands: Commands) {
     let entity = trigger.event_target();
     commands.queue(move |world: &mut World| {
         refresh_row_icon(world, entity);
@@ -1262,7 +1263,7 @@ fn refresh_icons_on_node_change(
 /// When an entity gets a parent (`ChildOf` added or changed),
 /// reparent or create its row in every Outliner panel.
 fn on_entity_reparented(
-    trigger: On<Add, ChildOf>,
+    trigger: On<Add<ChildOf>>,
     mut commands: Commands,
     tree_index: Res<TreeIndex>,
     editor_check: Query<(), Or<(With<EditorEntity>, With<EditorHidden>)>>,
@@ -1401,7 +1402,7 @@ fn on_entity_reparented(
 /// in every Outliner panel. Without this, panels show stale parent
 /// information after an undo.
 fn on_entity_deparented(
-    trigger: On<Remove, ChildOf>,
+    trigger: On<Remove<ChildOf>>,
     mut commands: Commands,
     tree_index: Res<TreeIndex>,
     editor_check: Query<(), Or<(With<EditorEntity>, With<EditorHidden>)>>,
@@ -1425,7 +1426,7 @@ fn on_entity_deparented(
 /// When an entity's Name is removed, despawn its row in every
 /// Outliner panel that has one.
 fn on_entity_removed(
-    trigger: On<Despawn, Name>,
+    trigger: On<Despawn<Name>>,
     mut commands: Commands,
     tree_index: Res<TreeIndex>,
 ) {
@@ -1441,7 +1442,7 @@ fn on_entity_removed(
 /// When `EditorHidden` is added, remove the row in every Outliner panel
 /// that has one (handles race with observers).
 fn on_entity_hidden(
-    trigger: On<Add, EditorHidden>,
+    trigger: On<Add<EditorHidden>>,
     mut commands: Commands,
     tree_index: Res<TreeIndex>,
 ) {
@@ -2891,11 +2892,11 @@ pub(crate) fn add_to_extension(ctx: &mut ExtensionContext) {
         .register_operator::<crate::prefab::operators::PrefabUnbundleInstanceOp>()
         .register_operator::<crate::prefab::operators::PrefabRepairSelfCyclesOp>();
     let ext = ctx.id();
-    // Deferred: condition is not bare Press::default() (mouse button + Press).
+    // Deferred: condition is not a bare press (mouse button + Press).
     ctx.spawn((
-        Action::<HierarchyOpenContextMenuOp>::new(),
-        ActionOf::<crate::core_extension::CoreExtensionInputContext>::new(ext),
-        bindings![(MouseButton::Right, Press::default())],
+        OperatorAction(HierarchyOpenContextMenuOp::ID),
+        ActionOf(ext),
+        bindings![(MouseButton::Right, Condition::Press)],
     ));
     ctx.bind_operator::<crate::core_extension::CoreExtensionInputContext, RenameBeginOp>([
         PresetInput::key("F2"),

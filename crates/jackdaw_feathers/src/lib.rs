@@ -1,5 +1,6 @@
 pub mod alert;
 pub mod button;
+pub mod checkbox;
 pub mod collapsible;
 pub mod color_picker;
 pub mod combobox;
@@ -13,6 +14,7 @@ pub mod inspector_field;
 pub mod list_view;
 pub mod menu_bar;
 pub mod number_input;
+pub mod options_bar;
 pub mod panel_card;
 pub mod panel_section;
 pub mod picker;
@@ -67,6 +69,7 @@ impl Plugin for EditorFeathersPlugin {
             picker::plugin,
             panel_card::plugin,
             tree_view::plugin,
+            checkbox::plugin,
         ));
     }
 }

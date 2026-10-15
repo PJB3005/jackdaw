@@ -25,17 +25,13 @@ use jackdaw_feathers::{
     tokens,
 };
 use jackdaw_localization::LocalizedText;
+use jackdaw_project_build::modules::ModuleCatalog;
 use jackdaw_widgets::collapsible::{CollapsibleBody, CollapsibleHeader, CollapsibleSection};
 
 use jackdaw_feathers::text_edit::TextEditValue;
 use std::collections::HashSet;
 
 use jackdaw_widgets::monitors::{Addition, Monitor, NotifyAdded};
-
-#[cfg(feature = "physics")]
-use jackdaw_avian_integration::AvianCollider;
-#[cfg(feature = "physics")]
-use jackdaw_geometry::is_convex_topology;
 
 use super::{
     ComponentDisplay, ComponentDisplayBody, ComponentDisplayTypePath, ComponentName,
@@ -240,17 +236,18 @@ const SCENE_TYPES_WITH_INSPECTOR_CARDS: [&str; 3] = [
 /// the inspector should offer as a card.
 ///
 /// A namespace cull with two kinds of hole punched in it: the crates whose
-/// components are user-facing wholesale, and the individual scene-data
-/// types in [`SCENE_TYPES_WITH_INSPECTOR_CARDS`].
+/// components are user-facing wholesale, modules' crates among them, and the
+/// individual scene-data types in [`SCENE_TYPES_WITH_INSPECTOR_CARDS`].
 fn hidden_by_namespace(full_path: &str) -> bool {
     full_path.starts_with("jackdaw")
         && !full_path.starts_with("jackdaw_jsn")
         && !full_path.starts_with("jackdaw_geometry")
         && !full_path.starts_with("jackdaw::reference_image")
-        && !full_path.starts_with("jackdaw_avian_integration")
         && !full_path.starts_with("jackdaw_animation")
-        && !full_path.starts_with("jackdaw_multiplayer")
         && !full_path.starts_with("jackdaw_bind::")
+        && ModuleCatalog::builtin()
+            .component_module(full_path)
+            .is_none()
         && !SCENE_TYPES_WITH_INSPECTOR_CARDS.contains(&full_path)
         && !authored_widget_components().contains(&full_path)
 }
@@ -447,8 +444,9 @@ pub(crate) fn build_inspector_displays(
                     && !full_path.starts_with("core")
                     && !full_path.starts_with("std")
                     && (!full_path.starts_with("jackdaw")
-                        || full_path.starts_with("jackdaw_avian_integration")
-                        || full_path.starts_with("jackdaw_multiplayer"));
+                        || ModuleCatalog::builtin()
+                            .component_module(full_path)
+                            .is_some());
                 if !is_user_type
                     && !crate::worn_material::material_component_paths().contains(&full_path)
                     && !authored_type_paths.is_empty()
@@ -704,29 +702,6 @@ pub(crate) fn build_inspector_displays(
             if type_id == TypeId::of::<crate::brush::Brush>() {
                 if let Some(brush) = reflected.downcast_ref::<crate::brush::Brush>() {
                     brush_display::spawn_brush_display(commands, body_entity, brush, materials);
-                    // When this brush is non-convex and has a physics collider, the bridge
-                    // forces TriMesh regardless of the user's AvianCollider setting. Show a
-                    // read-only note so the change is visible in the inspector.
-                    // CONVEX_FUNCTIONAL: different behavior is intentional (mirrors collider-type choice in physics_brush_bridge)
-                    #[cfg(feature = "physics")]
-                    if entity_ref.contains::<AvianCollider>()
-                        && let Some(brush) = entity_ref.get::<crate::brush::Brush>()
-                        && !is_convex_topology(&brush.topology)
-                    {
-                        commands.spawn((
-                            Text::new("Status: non-convex (collider forced to TriMesh)"),
-                            TextFont {
-                                font_size: tokens::TEXT_SIZE_SM,
-                                ..Default::default()
-                            },
-                            TextColor(tokens::TEXT_DISABLED),
-                            Node {
-                                margin: UiRect::top(Val::Px(tokens::SPACING_XS)),
-                                ..Default::default()
-                            },
-                            ChildOf(body_entity),
-                        ));
-                    }
                 }
                 continue;
             }
@@ -794,12 +769,17 @@ pub(crate) fn build_inspector_displays(
     if let Some(ast) = scene_ast
         && let Some(node) = ast.ast_for(source_entity)
     {
+        let mut unavailable = Vec::new();
         for type_path in ast.component_type_paths(node) {
             let schema = project_types.component(&type_path);
             if schema.is_none()
                 && (known_to_the_editor(&registry, &type_path)
                     || project_types.type_schema(&type_path).is_some())
             {
+                continue;
+            }
+            if super::unavailable::is_unavailable(&registry, project_types, &type_path) {
+                unavailable.push(type_path);
                 continue;
             }
             let enclosing = enclosing_type(&type_path)
@@ -851,15 +831,21 @@ pub(crate) fn build_inspector_displays(
                     names,
                 ),
                 None => super::project_component_display::spawn_document_component_fields(
-                    commands,
-                    card.body,
-                    ast,
-                    node,
-                    &type_path,
-                    enclosing.is_some(),
+                    commands, card.body, ast, node, &type_path,
                 ),
             }
         }
+        spawn_unavailable_group(
+            commands,
+            inspector_entity,
+            source_entity,
+            ast,
+            node,
+            &unavailable,
+            &icon_font.0,
+            &editor_font.0,
+            collapse_state,
+        );
     }
 
     // Add Component button is in the static layout header (layout.rs entity_inspector)
@@ -887,6 +873,93 @@ pub(crate) fn build_inspector_displays(
             crate::lod_bar::spawn_placement_card(world, inspector_entity, source_entity);
         });
     }
+}
+
+/// The components on `node` the editor cannot load, as one group of read-only
+/// cards: each names its type, says where it comes from, and shows its fields
+/// as the document spells them. Removing one is allowed; editing is not.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the card spawner's inputs, passed through"
+)]
+fn spawn_unavailable_group(
+    commands: &mut Commands,
+    inspector_entity: Entity,
+    source_entity: Entity,
+    ast: &jackdaw_bsn::SceneBsnAst,
+    node: Entity,
+    type_paths: &[String],
+    icon_font: &Handle<Font>,
+    editor_font: &Handle<Font>,
+    collapse_state: &super::InspectorCollapseState,
+) {
+    if type_paths.is_empty() {
+        return;
+    }
+    let group = commands
+        .spawn((
+            // Marked as a display so the next rebuild clears it with the cards.
+            ComponentDisplay,
+            InspectorGroupSection,
+            Node {
+                flex_direction: FlexDirection::Column,
+                width: Val::Percent(100.0),
+                row_gap: Val::Px(tokens::SPACING_SM),
+                ..Default::default()
+            },
+        ))
+        .id();
+    commands.spawn((
+        Text::new(format!("Not loaded ({})", type_paths.len())),
+        TextFont {
+            font_size: tokens::TEXT_SIZE_SM,
+            weight: FontWeight::MEDIUM,
+            ..Default::default()
+        },
+        TextColor(tokens::TEXT_SECONDARY),
+        ChildOf(group),
+    ));
+    for type_path in type_paths {
+        let card = spawn_component_display(
+            commands,
+            ComponentDisplaySpec {
+                name: super::unavailable::card_name(type_path),
+                type_path,
+                entity: source_entity,
+                is_overridden: false,
+                is_derived: false,
+                removable: true,
+                prefab_ctx: None,
+                revert_through_prefab: false,
+                icon_font,
+                editor_font,
+                collapse_state,
+            },
+        );
+        commands.entity(card.section).insert(ChildOf(group));
+        commands.spawn((
+            Node {
+                padding: UiRect::axes(Val::Px(tokens::SPACING_XS), Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(tokens::BORDER_RADIUS_SM)),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            BackgroundColor(tokens::AXIS_LABEL_BG),
+            ChildOf(card.title_row),
+            children![(
+                Text::new("not loaded"),
+                TextFont {
+                    font_size: tokens::TEXT_SIZE_SM,
+                    ..Default::default()
+                },
+                TextColor(tokens::TEXT_MUTED_COLOR.into()),
+            )],
+        ));
+        super::project_component_display::spawn_unavailable_component_fields(
+            commands, card.body, ast, node, type_path,
+        );
+    }
+    jackdaw_feathers::utils::attach_or_despawn(commands, inspector_entity, group);
 }
 
 /// Despawn inspector card and picker children as one queued world step so
@@ -1070,6 +1143,8 @@ pub(crate) struct ComponentDisplayCard {
     pub section: Entity,
     pub body: Entity,
     pub header: Entity,
+    /// The row holding the disclosure, icon and name, for chips beside the name.
+    pub title_row: Entity,
     pub type_settings: Entity,
 }
 
@@ -1244,7 +1319,7 @@ pub(crate) fn spawn_component_display(
     // emits `ValueChange<bool>` and flows through `on_disclosure_change`.
     commands
         .entity(toggle_area)
-        .observe(move |_: On<Pointer<Click>>, mut commands: Commands| {
+        .observe(move |_: On<PointerClick>, mut commands: Commands| {
             commands.trigger(ToggleChecked {
                 entity: disclosure_entity,
             });
@@ -1274,7 +1349,7 @@ pub(crate) fn spawn_component_display(
                 TextColor(default_style::INSPECTOR_OVERRIDE),
                 Hovered::default(),
                 ChildOf(header),
-                bevy::ui_widgets::observe(move |_: On<Pointer<Click>>, mut commands: Commands| {
+                bevy::ui_widgets::observe(move |_: On<PointerClick>, mut commands: Commands| {
                     let revert_path = prefab_type_path.clone();
                     commands
                         .operator("prefab.revert_component")
@@ -1307,7 +1382,7 @@ pub(crate) fn spawn_component_display(
                 Hovered::default(),
                 bo_call,
                 ChildOf(header),
-                bevy::ui_widgets::observe(move |_: On<Pointer<Click>>, mut commands: Commands| {
+                bevy::ui_widgets::observe(move |_: On<PointerClick>, mut commands: Commands| {
                     commands
                         .operator(super::ops::ComponentRevertBaselineOp::ID)
                         .param("entity", entity_param)
@@ -1329,7 +1404,7 @@ pub(crate) fn spawn_component_display(
         commands
             .spawn_scene(bsn! {
                 @FeathersToolButton {
-                    @caption: bsn! { icon_scene(Icon::X.unicode(), tokens::TEXT_SIZE_SM_PX) },
+                    @caption: bsn! { @icon_scene(Icon::X.unicode(), tokens::TEXT_SIZE_SM_PX) },
                     @variant: {ButtonVariant::Plain}
                 }
             })
@@ -1344,7 +1419,7 @@ pub(crate) fn spawn_component_display(
     if let Some(menu_ctx) = prefab_ctx.clone() {
         let menu_type_path = type_path.to_string();
         commands.entity(header).observe(
-            move |click: On<Pointer<Click>>,
+            move |click: On<PointerClick>,
                   mut commands: Commands,
                   windows: Query<&Window>,
                   mut state: ResMut<jackdaw_widgets::context_menu::ContextMenuState>,
@@ -1394,6 +1469,7 @@ pub(crate) fn spawn_component_display(
         section: section_entity,
         body: body_entity,
         header,
+        title_row: toggle_area,
         type_settings,
     }
 }
@@ -1684,10 +1760,9 @@ mod tests {
         assert!(hidden_by_namespace(
             "jackdaw_scene_types::node_id::SceneNodeId"
         ));
-        // The wholesale-allowed crates are untouched by the cull.
-        assert!(!hidden_by_namespace(
-            "jackdaw_avian_integration::AvianCollider"
-        ));
+        // The wholesale-allowed crates are untouched by the cull, modules'
+        // crates among them.
+        assert!(!hidden_by_namespace("jackdaw_multiplayer::Replication"));
         assert!(!hidden_by_namespace(
             "jackdaw_geometry::modifiers::ModifierStack"
         ));

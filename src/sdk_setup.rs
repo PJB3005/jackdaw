@@ -331,7 +331,7 @@ fn on_cancel_requested(
 
 /// The launcher row the SDK's state is drawn into, under the environment
 /// checks.
-#[derive(Component)]
+#[derive(Component, Default, Clone)]
 pub struct SdkStatusRow;
 
 #[derive(Component)]
@@ -540,7 +540,7 @@ fn spawn_row(
     if let Some(label) = content.action {
         commands.spawn((
             button(ButtonProps::new(label)),
-            observe(|click: On<Pointer<Click>>, mut setup: ResMut<SdkSetup>| {
+            observe(|click: On<PointerClick>, mut setup: ResMut<SdkSetup>| {
                 if click.event().button == PointerButton::Primary {
                     setup.start_requested = true;
                 }

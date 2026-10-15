@@ -24,6 +24,7 @@ use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
+use bevy::render::material_bind_groups::FallbackBuffer;
 use bevy::render::mesh::allocator::MeshAllocator;
 use bevy::render::mesh::{RenderMesh, RenderMeshBufferInfo};
 use bevy::render::render_asset::RenderAssets;
@@ -61,7 +62,7 @@ use crate::sidecar::{GridShape, RegionTerrainData};
 
 use super::scatter::{ScatterAssets, ScatterPrimitive, ScatterSystems};
 
-const SHADER_PATH: &str = "embedded://jackdaw_terrain/render/shaders/detail.wgsl";
+const SHADER_PATH: &str = "embedded://jackdaw_terrain/render/shaders/detail.wesl";
 
 /// How far a blade's shading normal is bent onto the ground's normal; the shader's `NORMAL_BEND`.
 pub const DETAIL_NORMAL_BEND: f32 = 0.8;
@@ -260,11 +261,11 @@ pub struct DetailTile {
     pub bounds: Aabb,
 }
 
-impl SyncComponent for DetailTile {
+impl SyncComponent<RenderApp> for DetailTile {
     type Target = Self;
 }
 
-impl ExtractComponent for DetailTile {
+impl ExtractComponent<RenderApp> for DetailTile {
     type QueryData = &'static DetailTile;
     type QueryFilter = ();
     type Out = Self;
@@ -435,6 +436,7 @@ pub type DetailKey = (Entity, usize, usize);
 
 /// The bindings every layer currently drawing is asking for.
 #[derive(Resource, Clone, Debug, Default, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct DetailLooks(pub Vec<(DetailKey, DetailBindings)>);
 
 /// A card of `segments` stacked quads, one unit tall and wide, its foot at the
@@ -538,7 +540,7 @@ pub enum DetailSystems {
 
 impl Plugin for DetailRenderPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "shaders/detail.wgsl");
+        embedded_asset!(app, "shaders/detail.wesl");
         super::scatter::add_asset_plugin(app);
         if !app.world().contains_resource::<Assets<Mesh>>() {
             app.init_asset::<Mesh>();
@@ -1235,6 +1237,8 @@ fn prepare_detail_bind_groups(
     images: Res<RenderAssets<GpuImage>>,
     fallback: Res<FallbackImage>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    shader_buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    fallback_buffer: Res<FallbackBuffer>,
 ) {
     groups.0.clear();
     let mut param = (images, fallback, buffers);
@@ -1243,6 +1247,8 @@ fn prepare_detail_bind_groups(
             &pipeline.layout,
             &render_device,
             &pipeline_cache,
+            &fallback_buffer,
+            &shader_buffers,
             &mut param,
         ) {
             groups.0.insert(*key, prepared.bind_group);
@@ -2324,9 +2330,9 @@ mod tests {
         assert_eq!(bindings.wind_strength, 0.0);
     }
 
-    /// The shader source, for the binding checks below. naga-oil input rather
+    /// The shader source, for the binding checks below. WESL with shader flags rather
     /// than plain WGSL, so the checks are textual.
-    const SHADER_SOURCE: &str = include_str!("shaders/detail.wgsl");
+    const SHADER_SOURCE: &str = include_str!("shaders/detail.wesl");
 
     #[test]
     fn every_detail_binding_is_declared_in_the_shader_at_its_derive_index() {
@@ -2515,7 +2521,7 @@ mod tests {
                     lightmap_slab: None,
                 },
                 Opaque3dBinKey {
-                    asset_id: AssetId::<Mesh>::invalid().into(),
+                    asset_id: AssetId::<Mesh>::default().into(),
                 },
             )
         };

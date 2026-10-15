@@ -1,0 +1,57 @@
+[
+  {
+    "id": "physics",
+    "name": "Physics",
+    "description": "Colliders, rigid bodies and joints with avian, edited in the editor and simulated in the game.",
+    "default": true,
+    "former_runtime_features": ["physics"],
+    "crates": [
+      {
+        "name": "avian3d",
+        "version": "0.8",
+        "plugin": "avian3d::prelude::PhysicsPlugins::default()"
+      },
+      {
+        "name": "jackdaw_avian_integration",
+        "plugin": "jackdaw_avian_integration::AvianColliderBridgePlugin"
+      }
+    ],
+    "provides": ["avian3d", "jackdaw_avian_integration"],
+    "component_prefixes": ["avian3d::", "jackdaw_avian_integration::"],
+    "component_group": "Avian3d",
+    "hidden_components": [
+      "avian3d::dynamics::solver::",
+      "avian3d::collider_tree::",
+      "avian3d::ancestor_marker::",
+      "avian3d::dynamics::rigid_body::mass_properties::components::computed::",
+      "avian3d::dynamics::rigid_body::sleeping::SleepTimer",
+      "avian3d::dynamics::rigid_body::sleeping::TimeToSleep",
+      "avian3d::dynamics::integrator::VelocityIntegrationData",
+      "avian3d::dynamics::integrator::IntegrationFlags",
+      "avian3d::collision::collider::constructor::ColliderConstructor"
+    ],
+    "extension": "jackdaw.physics",
+    "unavailable": "avian has no Bevy 0.20 release yet (avianphysics/avian#1070 ports it)"
+  },
+  {
+    "id": "navmesh",
+    "name": "Navmesh",
+    "description": "Bake a navigation mesh from the terrain and load it with the scene in the game.",
+    "runtime_features": ["navmesh"],
+    "provides": ["rerecast", "bevy_rerecast"],
+    "extension": "jackdaw.navmesh"
+  },
+  {
+    "id": "multiplayer",
+    "name": "Multiplayer",
+    "description": "Mark entities for replication and lay out network rooms; the game adds a networking backend.",
+    "crates": [
+      {
+        "name": "jackdaw_multiplayer",
+        "plugin": "jackdaw_multiplayer::JackdawMultiplayerTypesPlugin"
+      }
+    ],
+    "provides": ["jackdaw_multiplayer"],
+    "component_prefixes": ["jackdaw_multiplayer"]
+  }
+]

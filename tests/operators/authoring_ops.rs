@@ -556,10 +556,6 @@ const ENTITY_PARAM_OPS: &[(&str, &[&str], bool)] = &[
     ("hierarchy.rename_begin", &["entity"], true),
     ("lod.revert_override", &["entity"], false),
     ("material.override", &["entity"], true),
-    #[cfg(feature = "physics")]
-    ("physics.disable", &["entity"], true),
-    #[cfg(feature = "physics")]
-    ("physics.enable", &["entity"], true),
     ("prefab.apply_to_source", &["instance_entity"], false),
     ("prefab.open_source", &["entity"], false),
     ("prefab.pack", &["entity"], true),
@@ -1379,7 +1375,7 @@ fn component_paths(app: &App, entity: Entity) -> Vec<String> {
         .world()
         .inspect_entity(entity)
         .expect("the entity is live")
-        .filter_map(|info| info.type_id().map(|_| info.name().to_string()))
+        .filter_map(|(_, info)| info.type_id().map(|_| info.name().to_string()))
         .filter(|name| !name.starts_with("jackdaw_bind::types::BindContext"))
         .collect();
     paths.sort();

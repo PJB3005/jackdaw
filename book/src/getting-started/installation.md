@@ -232,6 +232,60 @@ shared-SDK mode as releases:
 cargo run --bin jackdaw --features dylib --target "$(rustc -vV | sed -n 's/host: //p')"
 ```
 
+## Managing editors with jd
+
+`jd editor` installs editors side by side, one per version, so projects
+made with different Bevy versions each open in a matching editor.
+
+```bash
+jd editor list --available        # published versions, by Bevy line
+jd editor install 0.20            # newest 0.20.x
+jd editor install bleeding-edge   # newest nightly, built against Bevy main
+jd editor install 0.20.1 --modules physics,navmesh
+jd editor list                    # what is installed
+jd editor default 0.20.1          # editor for projects that pin none
+jd editor remove 0.19.0
+jd editor clean                   # drop nightlies no project uses
+jd editor verify 0.20.1           # check that an install still runs
+jd editor refresh                 # fetch the release index into the cache
+```
+
+Every `jd editor` command takes `--json`, which prints one JSON object per
+line (progress, stage, message, warning, index, done and error events)
+for programs that drive `jd`, such as the editor's launcher.
+
+Versions come from a signed release index, published from the first
+release that ships it on; earlier releases are not in it. `jd` checks the
+signature and each download's size and checksum, and runs the new editor
+once before keeping it. A failed install leaves nothing behind. The index is
+cached, so listing works offline. `jd` only reports newer versions; it never
+downloads anything you did not ask for.
+
+`jd open <project>` reads the editor the project's `jackdaw.toml` pins and
+launches the newest installed patch of that line, or tells you which
+`jd editor install` to run. `jd editor remove` refuses while a project
+last opened with `jd open` still uses that editor; `--force` removes it
+anyway. Nightlies stay installed until `jd editor clean`, which keeps the
+newest, those marked known good, and any a project opened with `jd open`
+uses. Projects the launcher opens are recorded the same way.
+
+The launcher, the editor's first window, shows the same installs: its
+Editors page installs, updates, verifies and uninstalls them through `jd`,
+and opening a project from its Projects page relaunches into the install
+the project pins, or offers to install it, open a copy with an installed
+editor, or convert the project after a backup.
+
+Editors live in `editors/` under the data directory
+(`~/.local/share/jackdaw` on Linux, `%LOCALAPPDATA%\jackdaw` on Windows),
+next to `installs.json`. An editor installed another way, such as
+with `cargo install`, can be added with `jd editor locate <path>`; removing
+it later only unregisters it.
+
+`jd self update` replaces a standalone `jd` with the one from the newest
+stable release. A `jd` installed with cargo is updated with
+`cargo install jd --locked`, and one that came with an editor, from the
+install script or `jd editor install`, is updated with that editor.
+
 ## The extension SDK
 
 The extension SDK is a full compilation of Bevy and the Jackdaw API that
@@ -269,7 +323,7 @@ Use the launcher's **New Game**, **New Extension**, and **Import Bevy
 Project** actions, or:
 
 ```bash
-jd new my-game                          # also: --extension, --path <dir>, --no-git
+jd new my-game                          # also: --extension, --path <dir>, --no-git, --modules <list>
 jd open my-game
 
 jd import /path/to/existing-game        # preview

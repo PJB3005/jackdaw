@@ -6,7 +6,7 @@
 //! JACKDAW_RUN_OP="input.key key=KeyD mods=ctrl; input.text text=Play"
 //! ```
 //!
-//! Nothing here triggers a `Pointer<Click>` or a `FocusedInput`. Each operator
+//! Nothing here triggers a `PointerClick` or a `FocusedInput`. Each operator
 //! queues the window events winit would have delivered -- on their own message
 //! streams and on the combined [`WindowEvent`] one, as `bevy_winit` forwards
 //! them -- and moves the window's cursor with them, so everything downstream
@@ -54,6 +54,10 @@ impl JackdawExtension for TestInputExtension {
         ExtensionKind::Builtin
     }
 
+    fn app_plugin(&self) -> Option<Box<dyn Plugin>> {
+        Some(Box::new(plugin))
+    }
+
     fn register(&self, ctx: &mut ExtensionContext) {
         ctx.register_operator::<InputPointerOp>()
             .register_operator::<InputKeyOp>()
@@ -61,7 +65,7 @@ impl JackdawExtension for TestInputExtension {
     }
 }
 
-pub(crate) fn plugin(app: &mut App) {
+fn plugin(app: &mut App) {
     app.init_resource::<SyntheticInput>().add_systems(
         First,
         // Ahead of the pass that turns window events into `PointerInput`, so a

@@ -21,6 +21,19 @@ opens and plays.
 # other than `assets`.
 # assets_dir = "content"
 
+[jackdaw]
+version = "0.20.1"
+bevy = "0.20"
+channel = "stable"
+
+[modules]
+physics = true
+navmesh = false
+multiplayer = false
+
+[extensions]
+"acme.dialogue" = true
+
 [[run]]
 name = "Play"
 # instances = 2
@@ -44,6 +57,46 @@ Top-level keys:
   read that setting out of your code. The path must stay inside the
   project; an absolute path or one starting with `..` is ignored. A
   change takes effect the next time the editor starts.
+
+`[jackdaw]` records the editor the project was set up with. `jd open`
+opens a `stable` project in the newest installed patch of its
+version's line, so `0.20.1` opens in `0.20.3` once that is installed.
+A `bleeding-edge` project also records `build` (the nightly, such as
+`nightly-2026-10-09`) and `bevy_rev`, and opens only in that nightly.
+A missing `channel` means `stable`.
+
+`[modules]` records the optional modules the project uses. Each
+module pairs editor tooling with what the game needs for it:
+
+| Module | Game side | Requires |
+| --- | --- | --- |
+| `physics` | `avian3d` and its `PhysicsPlugins`, `jackdaw_avian_integration` and its `AvianColliderBridgePlugin` | |
+| `navmesh` | `jackdaw_runtime` feature `navmesh` | |
+| `multiplayer` | `jackdaw_multiplayer` and its types plugin | |
+
+Physics is not available for Bevy 0.20 projects until avian releases
+for it; the dialogs show it greyed out with that reason, and `jd new`
+refuses it.
+
+Physics and Navmesh bring their editor tooling as extensions
+(`jackdaw.physics` and `jackdaw.navmesh`) rather than building it into
+the editor.
+
+Pick them in the New Project and import dialogs, with
+`jd new --modules navmesh,multiplayer` (or `--no-modules`) and
+`jd import --modules ...`, and later with File > Modules in the
+editor. Changing them there edits `[modules]` and the game's
+`Cargo.toml` together; turning a module off removes its runtime
+features but leaves its crates, which your code may still use. A
+project with no `[modules]` table is read from the features its
+`jackdaw_runtime` dependency already enables. New games start with
+`physics` only.
+
+`[extensions]` turns editor extensions on or off for this project, by
+extension id, over the global list every project starts from. The editor
+applies it when the project opens; extensions it does not name follow
+the global list. Edit it from the launcher's Extensions page, where the
+global defaults are edited too.
 
 Each `[[run]]` entry is one item in the Play dropdown. Every run
 launches the same already-built game binary; entries differ only
@@ -72,16 +125,19 @@ the game binary, and for extension projects the generated shim
 crate and SDK-linked build target. It is gitignored (the scaffold
 and import both add the entry), owned entirely by the editor, and
 safe to delete; the next project open rebuilds what it needs. The
-editor never touches the project's own `Cargo.toml`, `Cargo.lock`,
-`target/`, or toolchain.
+editor edits the project's own `Cargo.toml` only when you change
+its modules, and never touches its `Cargo.lock`, `target/`, or
+toolchain.
 
 ## Command line
 
 `jackdaw` is exclusively the GUI. `jd` is the sole public command:
 
-- `jd new <name> [--extension]`
-- `jd import [path] [--plugin <Type>] [--apply]`
+- `jd new <name> [--extension] [--modules <list> | --no-modules]`
+- `jd import [path] [--plugin <Type>] [--modules <list>] [--apply]`
 - `jd open [path]`
+- `jd editor <list|install|remove|default|locate|clean>`
+- `jd self update`
 - `jd build [--project <path>]`
 - `jd run [--project <path>]`
 - `jd setup`
@@ -137,17 +193,10 @@ These are features of the `jackdaw` crate itself, relevant if you
 build the editor from source. Projects have no jackdaw-related
 features.
 
-- `default = ["multiplayer", "camera_rig", "embed-recipe", "physics", "navmesh"]`.
-- `physics`. Avian physics authoring: the physics tool, brush
-  colliders, the physics inspector, collider overlays and the
-  simulation preview. Without it, a scene's physics components are
-  kept and saved as they are.
-- `navmesh`. The terrain navmesh bake. Implies `physics`. Without
-  it, a navmesh already baked beside a scene is still loaded, drawn
-  and saved with the scene.
+- `default = ["multiplayer", "camera_rig", "embed-recipe"]`.
 - `multiplayer`. Bundles the editor-only networking authoring
-  extension. The editor writes replication metadata; no lightyear
-  is compiled into it.
+  extension. The editor writes replication metadata; the game
+  brings its own networking backend.
 - `camera_rig`. The authorable camera-rig components.
 - `dylib`. The SDK-backed extension flow: builds the proxy dylib
   that extension builds link against. On by default in
@@ -212,14 +261,12 @@ Programmatic configuration goes through `jackdaw_editor` and its
 
 ```rust
 App::new()
-    .add_plugins(EnhancedInputPlugin)
     .add_plugins(jackdaw_editor::JackdawEditorPlugins::default())
     .run();
 ```
 
 Notes:
 
-- `EnhancedInputPlugin` must be added before `JackdawEditorPlugins`.
 - `DylibLoaderPlugin` is intentionally not in the group. The
   official GUI opts into marketplace loading separately.
 

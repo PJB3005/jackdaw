@@ -1,7 +1,7 @@
 //! Entity-based lifecycle primitives for extensions.
 //!
 //! An extension is represented as an [`Entity`] carrying an [`Extension`]
-//! component. Everything it registers (operators, BEI context entities,
+//! component. Everything it registers (operators, input context entities,
 //! dock windows, workspaces) is spawned as a child of that entity.
 //! Unloading is `world.entity_mut(ext).despawn()`; Bevy cascades through
 //! the children. A small set of observers in `ExtensionLoaderPlugin`
@@ -22,6 +22,7 @@ use bevy::prelude::*;
 
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<ExtensionCatalog>()
+        .init_resource::<ExtensionAppPlugins>()
         .init_resource::<OperatorIndex>()
         .add_observer(index_operator_on_add)
         .add_observer(deindex_and_cleanup_operator_on_remove)
@@ -36,7 +37,7 @@ pub(super) fn plugin(app: &mut App) {
 /// Root component for an extension.
 ///
 /// Despawning this entity tears down all of the extension's child entities:
-/// operators, BEI context/action entities, registered windows/workspaces, and
+/// operators, input context/action entities, registered windows/workspaces, and
 /// observer entities. Non-ECS cleanup (unregistering `SystemId`s, removing
 /// entries from `WindowRegistry`) is handled by observers reacting to the
 /// child-entity despawns.
@@ -74,7 +75,7 @@ impl Default for ResourceId {
 /// Child of an [`Extension`]; represents a single operator.
 ///
 /// Holds the `SystemId`s that the dispatcher runs. An observer on
-/// `On<Remove, OperatorEntity>` unregisters those systems when this entity
+/// `On<Remove<OperatorEntity>>` unregisters those systems when this entity
 /// despawns, and keeps the `OperatorIndex` in sync.
 #[derive(Component, Debug, Clone)]
 pub struct OperatorEntity {
@@ -143,15 +144,12 @@ impl OperatorEntity {
     }
 }
 
-/// Marker on a BEI action entity associating it with an operator id.
-/// Auto-inserted by [`crate::ExtensionContext::register_operator`] via
-/// an `On<Add, Action<Op>>` observer, so call sites that spawn
-/// `Action::<Op>::new()` don't need to do anything extra.
+/// Tag on an input action entity naming the operator it dispatches when
+/// it fires. [`crate::ExtensionContext::bind_operator`] and
+/// [`crate::ExtensionContext::action_for`] spawn actions carrying it.
 ///
-/// Lets systems (notably the tooltip pipeline) walk from operator id
-/// to the action entity's `Bindings` without needing the typed
-/// `Action<Op>` parameter, which would force a generic over the
-/// operator type.
+/// Lets systems (notably the tooltip pipeline and the keymap applier) walk
+/// from operator id to the action entity's `Bindings`.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct OperatorAction(pub &'static str);
 
@@ -222,7 +220,7 @@ impl<'w, 's> ActiveModalQuery<'w, 's> {
 /// Marks an entity as tracking a dock window registration.
 ///
 /// Spawned as a child of the [`Extension`] entity when `register_window` is
-/// called. An observer on `On<Remove, RegisteredWindow>` calls
+/// called. An observer on `On<Remove<RegisteredWindow>>` calls
 /// `WindowRegistry::unregister(id)` so the window disappears from the
 /// add-window popup when the extension unloads.
 #[derive(Component, Clone, Debug)]
@@ -315,8 +313,7 @@ pub enum ExtensionKind {
 
 impl ExtensionCatalog {
     /// Register a constructor with its declared kind. Most callers
-    /// should use [`App::register_extension`] instead, which handles BEI
-    /// context registration.
+    /// should use [`App::register_extension`] instead.
     fn register_extension_internal(
         &mut self,
         ctor: impl Fn() -> Box<dyn crate::JackdawExtension> + Send + Sync + 'static,
@@ -400,7 +397,9 @@ impl ExtensionAppExt for App {
         &mut self,
         ctor: impl Fn() -> Box<dyn crate::JackdawExtension> + Send + Sync + 'static,
     ) -> &mut Self {
-        let id = ctor().id();
+        let extension = ctor();
+        let id = extension.id();
+        add_app_plugin(self, extension.as_ref());
         self.world_mut()
             .resource_mut::<ExtensionCatalog>()
             .register_extension_internal(ctor);
@@ -408,6 +407,105 @@ impl ExtensionAppExt for App {
         init_extension(id);
         self
     }
+}
+
+/// The App plugins extensions added while the editor `App` was built, and
+/// the extensions waiting on a restart because of them.
+///
+/// See [`crate::JackdawExtension::app_plugin`].
+#[derive(Resource, Default)]
+pub struct ExtensionAppPlugins {
+    /// Plugin name by extension id, for each plugin added at launch.
+    added: HashMap<String, String>,
+    /// Extensions whose requested state takes effect after a restart, with
+    /// whether that state is enabled.
+    pub(crate) pending: HashMap<String, bool>,
+}
+
+impl ExtensionAppPlugins {
+    /// The name of the plugin `id` added at launch, if it added one.
+    pub fn plugin_of(&self, id: &str) -> Option<&str> {
+        self.added.get(id).map(String::as_str)
+    }
+
+    /// Whether `extension` can activate in this session: it declares the
+    /// same App plugin it added at launch, or none and added none.
+    pub fn can_activate(&self, extension: &dyn crate::JackdawExtension) -> bool {
+        let declared = extension
+            .app_plugin()
+            .map(|plugin| plugin.name().to_string());
+        declared.as_deref() == self.plugin_of(&extension.id())
+    }
+
+    /// Whether `id` waits on a restart.
+    pub fn restart_required(&self, id: &str) -> bool {
+        self.pending.contains_key(id)
+    }
+
+    /// The state `id` takes after a restart, if it waits on one.
+    pub fn pending_state(&self, id: &str) -> Option<bool> {
+        self.pending.get(id).copied()
+    }
+
+    /// Record that `id` takes the given enabled state after a restart.
+    pub fn require_restart(&mut self, id: impl Into<String>, enabled: bool) {
+        self.pending.insert(id.into(), enabled);
+    }
+
+    /// Forget a pending restart for `id`, once the session already matches it.
+    pub fn clear_restart(&mut self, id: &str) {
+        self.pending.remove(id);
+    }
+}
+
+/// Wraps an extension's boxed plugin so `App::add_plugins` accepts it.
+struct ExtensionAppPlugin(Box<dyn Plugin>);
+
+impl Plugin for ExtensionAppPlugin {
+    fn build(&self, app: &mut App) {
+        self.0.build(app);
+    }
+
+    fn ready(&self, app: &App) -> bool {
+        self.0.ready(app)
+    }
+
+    fn finish(&self, app: &mut App) {
+        self.0.finish(app);
+    }
+
+    fn cleanup(&self, app: &mut App) {
+        self.0.cleanup(app);
+    }
+
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn is_unique(&self) -> bool {
+        self.0.is_unique()
+    }
+}
+
+/// Add `extension`'s App plugin to `app` when the user has not turned the
+/// extension off. Call while the `App` is being built; built-in extensions
+/// get this through [`ExtensionAppExt::register_extension`] and installed
+/// ones through the dylib loader.
+pub fn add_app_plugin(app: &mut App, extension: &dyn crate::JackdawExtension) {
+    let Some(plugin) = extension.app_plugin() else {
+        return;
+    };
+    let id = extension.id();
+    if !crate::extensions_config::is_extension_enabled(&id) {
+        return;
+    }
+    let name = plugin.name().to_string();
+    info!("Adding the App plugin `{name}` of extension `{id}`");
+    app.add_plugins(ExtensionAppPlugin(plugin));
+    app.world_mut()
+        .get_resource_or_init::<ExtensionAppPlugins>()
+        .added
+        .insert(id, name);
 }
 
 /// Unload an extension. Despawns the root entity; the cascade and
@@ -438,6 +536,13 @@ pub fn enable_extension(world: &mut World, id: &str) -> Option<Entity> {
     }
 
     let extension = world.resource::<ExtensionCatalog>().construct(id)?;
+    let mut app_plugins = world.get_resource_or_init::<ExtensionAppPlugins>();
+    if !app_plugins.can_activate(extension.as_ref()) {
+        info!("Extension `{id}` adds an App plugin; it is enabled after a restart");
+        app_plugins.require_restart(id, true);
+        return None;
+    }
+    app_plugins.clear_restart(id);
     Some(load_static_extension(world, extension))
 }
 
@@ -591,7 +696,7 @@ pub fn unregister_dylib_extension(world: &mut World, id: &str) -> bool {
 
 /// Keep `OperatorIndex` in sync when an operator entity is spawned.
 pub(crate) fn index_operator_on_add(
-    trigger: On<Add, OperatorEntity>,
+    trigger: On<Add<OperatorEntity>>,
     operators: Query<&OperatorEntity>,
     mut index: ResMut<OperatorIndex>,
 ) {
@@ -604,7 +709,7 @@ pub(crate) fn index_operator_on_add(
 /// when its entity is removed, so they don't leak across enable /
 /// disable cycles.
 pub(crate) fn deindex_and_cleanup_operator_on_remove(
-    trigger: On<Remove, OperatorEntity>,
+    trigger: On<Remove<OperatorEntity>>,
     operators: Query<&OperatorEntity>,
     mut index: ResMut<OperatorIndex>,
     mut commands: Commands,
@@ -631,7 +736,7 @@ pub(crate) fn deindex_and_cleanup_operator_on_remove(
 /// its marker entity despawns, so disabling an extension visibly removes
 /// its windows.
 pub(crate) fn cleanup_window_on_remove(
-    trigger: On<Remove, RegisteredWindow>,
+    trigger: On<Remove<RegisteredWindow>>,
     windows: Query<&RegisteredWindow>,
     mut registry: ResMut<jackdaw_panels::WindowRegistry>,
     mut dock_tree: ResMut<jackdaw_panels::tree::DockTree>,
@@ -650,7 +755,7 @@ pub(crate) fn cleanup_window_on_remove(
 
 /// Unregister a workspace when its marker entity despawns.
 pub(crate) fn cleanup_workspace_on_remove(
-    trigger: On<Remove, RegisteredWorkspace>,
+    trigger: On<Remove<RegisteredWorkspace>>,
     workspaces: Query<&RegisteredWorkspace>,
     mut registry: ResMut<jackdaw_panels::WorkspaceRegistry>,
 ) {
@@ -662,7 +767,7 @@ pub(crate) fn cleanup_workspace_on_remove(
 /// Remove a panel extension section from the registry when its marker
 /// entity despawns.
 pub(crate) fn cleanup_window_extension_on_remove(
-    trigger: On<Remove, RegisteredWindowExtension>,
+    trigger: On<Remove<RegisteredWindowExtension>>,
     registrations: Query<&RegisteredWindowExtension>,
     mut registry: ResMut<crate::WindowExtensionRegistry>,
 ) {
@@ -672,7 +777,7 @@ pub(crate) fn cleanup_window_extension_on_remove(
 }
 
 pub(crate) fn cleanup_widget_on_remove(
-    trigger: On<Remove, RegisteredWidgetDefinition>,
+    trigger: On<Remove<RegisteredWidgetDefinition>>,
     registrations: Query<&RegisteredWidgetDefinition>,
     mut registry: ResMut<crate::widgets::WidgetRegistry>,
 ) {
@@ -682,7 +787,7 @@ pub(crate) fn cleanup_widget_on_remove(
 }
 
 fn cleanup_resource_on_remove(
-    trigger: On<Remove, ExtensionResourceOf>,
+    trigger: On<Remove<ExtensionResourceOf>>,
     resource_id: Query<&ExtensionResourceOf>,
     mut commands: Commands,
 ) {

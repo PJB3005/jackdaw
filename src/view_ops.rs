@@ -42,9 +42,6 @@ pub(crate) fn add_to_extension(ctx: &mut ExtensionContext) {
         .register_operator::<ViewUiZoomInOp>()
         .register_operator::<ViewUiZoomOutOp>()
         .register_operator::<ViewUiZoomResetOp>();
-    #[cfg(feature = "physics")]
-    ctx.register_operator::<ViewToggleColliderGizmosOp>()
-        .register_operator::<ViewToggleHierarchyArrowsOp>();
 
     ctx.bind_operator::<CoreExtensionInputContext, ViewToggleWireframeOp>([PresetInput::key(
         "KeyW",
@@ -178,34 +175,6 @@ pub(crate) fn view_toggle_alignment_guides(
     mut settings: ResMut<crate::viewport_overlays::OverlaySettings>,
 ) -> OperatorResult {
     settings.show_alignment_guides = !settings.show_alignment_guides;
-    OperatorResult::Finished
-}
-
-#[cfg(feature = "physics")]
-#[operator(
-    id = "view.toggle_collider_gizmos",
-    label = "Toggle Collider Gizmos",
-    allows_undo = false
-)]
-pub(crate) fn view_toggle_collider_gizmos(
-    _: In<OperatorParameters>,
-    mut config: ResMut<jackdaw_avian_integration::PhysicsOverlayConfig>,
-) -> OperatorResult {
-    config.show_colliders = !config.show_colliders;
-    OperatorResult::Finished
-}
-
-#[cfg(feature = "physics")]
-#[operator(
-    id = "view.toggle_hierarchy_arrows",
-    label = "Toggle Hierarchy Arrows",
-    allows_undo = false
-)]
-pub(crate) fn view_toggle_hierarchy_arrows(
-    _: In<OperatorParameters>,
-    mut config: ResMut<jackdaw_avian_integration::PhysicsOverlayConfig>,
-) -> OperatorResult {
-    config.show_hierarchy_arrows = !config.show_hierarchy_arrows;
     OperatorResult::Finished
 }
 
@@ -931,7 +900,7 @@ fn expand_world_aabb(transform: &GlobalTransform, aabb: &Aabb, min: &mut Vec3, m
 /// Sidecar system that fans Numpad 1/3/7 (with optional Ctrl, Cmd on
 /// macOS) into `view.set_axis` calls with the right `axis`/`sign`
 /// parameters.
-/// Necessary because BEI key bindings can't carry payloads.
+/// Necessary because key bindings can't carry payloads.
 ///
 /// Works in any edit mode (Numpad keys don't collide with the Digit
 /// keybinds for vertex/edge/face mode), so users can snap to an axis

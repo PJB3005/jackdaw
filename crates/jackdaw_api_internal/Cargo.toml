@@ -9,11 +9,12 @@ repository = "https://github.com/jbuehler23/jackdaw"
 
 [dependencies]
 bevy.workspace = true
-bevy_enhanced_input.workspace = true
+jackdaw_input.workspace = true
 jackdaw_panels.workspace = true
 jackdaw_commands.workspace = true
 jackdaw_api_macros.workspace = true
 jackdaw_scene_types.workspace = true
+jackdaw_terrain.workspace = true
 jackdaw_env.workspace = true
 lucide-icons.workspace = true
 dirs.workspace = true

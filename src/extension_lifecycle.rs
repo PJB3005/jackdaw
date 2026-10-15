@@ -17,10 +17,6 @@ use crate::extension_resolution::resolve_enabled_list;
 use crate::input_contexts::spawn_contexts;
 
 pub(super) fn plugin(app: &mut App) {
-    // Must run after every plugin's `finish()`: BEI initializes
-    // `ContextInstances<PreUpdate>` there, and spawning a context
-    // entity before that resource exists panics.
-    //
     // Ordering guarantee: `spawn_contexts` runs before `apply_active_keymap`
     // so the `BuiltinActions` and `DefaultKeymap` entries for modal/nav are
     // present when the applier iterates preset bindings.
@@ -101,6 +97,7 @@ fn load_installed_extensions_on_open(world: &mut World) {
     for library in pending {
         match jackdaw_loader::load_installed_from_path(world, &library) {
             Ok(id) => info!("Loaded extension `{id}` from {}", library.display()),
+            Err(error @ jackdaw_loader::LoadError::RestartRequired(_)) => info!("{error}"),
             Err(error) => warn!("Failed to load {}: {error}", library.display()),
         }
     }

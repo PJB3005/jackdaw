@@ -79,10 +79,13 @@ pub mod ext_build;
 pub mod extension_build;
 mod extension_lifecycle;
 pub mod extension_resolution;
+pub mod extension_slots;
 pub mod extensions_dialog;
 pub mod file_ops;
 pub mod fps_overlay;
 pub mod hot_reload;
+pub mod launch;
+pub mod launcher;
 pub mod layout;
 pub mod live_edits;
 pub mod live_edits_ui;
@@ -104,15 +107,12 @@ pub mod modal_inputs;
 pub mod modal_transform;
 pub mod model_lod;
 pub mod modifier_ops;
+pub mod module_picker;
 pub mod native_dialog;
 pub mod new_project;
 pub mod numeric_transform;
 pub mod operator_tooltip;
 pub mod perf_probe;
-#[cfg(feature = "physics")]
-pub mod physics_brush_bridge;
-#[cfg(feature = "physics")]
-pub mod physics_tool;
 pub mod pie;
 pub mod pie_menu;
 pub mod pie_mirror;
@@ -127,6 +127,7 @@ pub mod progress;
 pub mod project;
 pub mod project_build;
 pub mod project_definitions;
+pub mod project_modules;
 pub mod project_select;
 pub mod project_settings;
 pub mod project_types;
@@ -198,7 +199,6 @@ use bevy::{
     platform::collections::HashMap,
     prelude::*,
 };
-use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 use jackdaw_api::prelude::*;
 use jackdaw_api_internal::{
     ToAnchorId as _,
@@ -221,15 +221,6 @@ pub mod prelude {
         EditorHidden, EditorPreview, ExtensionPlugin, JackdawEditorPlugins, SkipSerialization,
     };
     pub use jackdaw_api::prelude::*;
-
-    // Ambient plugins re-exported so binaries can write
-    // `add_plugins((PhysicsPlugins::default(), EnhancedInputPlugin))`
-    // without direct deps on avian3d / bevy_enhanced_input.
-    // Editor plugins assert presence rather than adding, so user
-    // code can add the same plugins without conflict.
-    #[cfg(feature = "physics")]
-    pub use avian3d::prelude::PhysicsPlugins;
-    pub use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 }
 
 /// System set for all editor interaction systems (input handling, viewport clicks,
@@ -252,15 +243,7 @@ pub fn no_dialog_open(
     dialogs.is_empty() && overlays.is_empty()
 }
 
-#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum AppState {
-    #[default]
-    ProjectSelect,
-    Editor,
-}
-
-#[derive(Component, Copy, Clone, Default)]
-pub struct EditorEntity;
+pub use jackdaw_api_internal::{AppState, EditorEntity};
 
 /// Marker component for UI overlays that should block viewport camera input
 /// (scroll, pan, orbit) while they exist. Add this to any overlay entity
@@ -366,11 +349,9 @@ pub struct EditorCorePlugin;
 
 impl Plugin for EditorCorePlugin {
     fn build(&self, app: &mut App) {
-        debug_assert!(
-            app.is_plugin_added::<EnhancedInputPlugin>(),
-            "EditorCorePlugin requires EnhancedInputPlugin first; \
-             add `EnhancedInputPlugin` in main.rs before JackdawEditorPlugins."
-        );
+        if !app.is_plugin_added::<jackdaw_input::InputActionPlugin>() {
+            app.add_plugins(jackdaw_input::InputActionPlugin);
+        }
         app.init_state::<AppState>();
         jackdaw_runtime::propagate_into_reused_indices(app);
         // A game whose own UI is built on feathers adds the group itself,
@@ -429,6 +410,7 @@ impl Plugin for EditorCorePlugin {
             jackdaw_bsn::JackdawBsnPlugin,
             (
                 project_select::ProjectSelectPlugin,
+                launcher::LauncherPlugin,
                 sdk_setup::SdkSetupPlugin,
                 scrolling_log::ScrollingLogPlugin,
                 inspector::InspectorPlugin,
@@ -474,6 +456,8 @@ impl Plugin for EditorCorePlugin {
         .add_plugins(keybinds::KeybindsPlugin)
         .add_plugins(keybind_settings::KeybindSettingsPlugin)
         .add_plugins(play_settings::PlaySettingsPlugin)
+        .add_plugins(module_picker::ModulePickerPlugin)
+        .add_plugins(project_modules::ProjectModulesPlugin)
         .add_plugins(panel_focus::PanelFocusPlugin)
         .add_plugins((
             (
@@ -520,6 +504,7 @@ impl Plugin for EditorCorePlugin {
             viewport_quality::plugin,
             viewport_redraw::plugin,
             toolbar_overflow::plugin,
+            extension_slots::plugin,
         ))
         .add_plugins(native_dialog::NativeDialogPlugin)
         .add_plugins(definition_assets::plugin)
@@ -654,14 +639,6 @@ impl Plugin for EditorCorePlugin {
         .add_observer(on_clip_selector_change)
         .add_observer(on_duration_input_commit)
         .add_observer(on_timeline_keyframe_click);
-
-        #[cfg(feature = "physics")]
-        app.add_plugins((
-            jackdaw_avian_integration::PhysicsOverlaysPlugin::<selection::Selected>::new(),
-            jackdaw_avian_integration::simulation::PhysicsSimulationPlugin,
-            physics_brush_bridge::PhysicsBrushBridgePlugin,
-            physics_tool::PhysicsToolPlugin,
-        ));
         app.add_plugins(extension_lifecycle::plugin);
     }
 }
@@ -706,8 +683,8 @@ impl ExtensionPlugin {
 
 impl Plugin for ExtensionPlugin {
     fn build(&self, app: &mut App) {
-        // Extension registration runs during `build()` so BEI's
-        // `finish()` hook sees every context type. Built-ins override
+        // Extension registration runs during `build()`, before any plugin's
+        // `finish()`. Built-ins override
         // `kind()` to `Builtin`; user-supplied extensions default to
         // `Custom`.
         use jackdaw_api_internal::lifecycle::ExtensionAppExt as _;
@@ -722,16 +699,15 @@ impl Plugin for ExtensionPlugin {
                 .register_extension::<builtin_extensions::AnimationGraphExtension>()
                 .register_extension::<build_panel::BuildPanelExtension>()
                 .register_extension::<builtin_extensions::InspectorExtension>()
-                .add_plugins(test_input::plugin)
                 .register_extension::<test_input::TestInputExtension>();
         }
 
         // Bundled behind the default-on `multiplayer` feature. Registers the
         // proxy reflection types the networking authoring components need
         // (`Replication`, `NetworkRoom`) plus the user-toggleable networking
-        // extension. No lightyear is compiled into the editor here. Kept a
-        // separate gated `if` so the cfg stays localized off the method chain
-        // above; `ExtensionAppExt` is already in scope from the `use` above.
+        // extension. Kept a separate gated `if` so the cfg stays localized off
+        // the method chain above; `ExtensionAppExt` is already in scope from
+        // the `use` above.
         #[cfg(feature = "multiplayer")]
         if self.enable_builtin_extensiosn {
             app.add_plugins(jackdaw_multiplayer::JackdawMultiplayerTypesPlugin)
@@ -769,26 +745,26 @@ fn rebuild_menu_if_dirty(world: &mut World) {
     }
 }
 
-fn flag_menu_dirty_on_window_add(_: On<Add, RegisteredWindow>, mut dirty: ResMut<MenuBarDirty>) {
+fn flag_menu_dirty_on_window_add(_: On<Add<RegisteredWindow>>, mut dirty: ResMut<MenuBarDirty>) {
     dirty.0 = true;
 }
 
 fn flag_menu_dirty_on_window_remove(
-    _: On<Remove, RegisteredWindow>,
+    _: On<Remove<RegisteredWindow>>,
     mut dirty: ResMut<MenuBarDirty>,
 ) {
     dirty.0 = true;
 }
 
 fn flag_menu_dirty_on_menu_entry_add(
-    _: On<Add, RegisteredMenuEntry>,
+    _: On<Add<RegisteredMenuEntry>>,
     mut dirty: ResMut<MenuBarDirty>,
 ) {
     dirty.0 = true;
 }
 
 fn flag_menu_dirty_on_menu_entry_remove(
-    _: On<Remove, RegisteredMenuEntry>,
+    _: On<Remove<RegisteredMenuEntry>>,
     mut dirty: ResMut<MenuBarDirty>,
 ) {
     dirty.0 = true;
@@ -2020,7 +1996,7 @@ impl jackdaw_commands::EditorCommand for SpawnKeyframeCmd {
 /// Propagation is stopped so the click doesn't also hit the
 /// scrubber and seek the playhead.
 fn on_timeline_keyframe_click(
-    mut event: On<Pointer<Click>>,
+    mut event: On<PointerClick>,
     handles: Query<&jackdaw_animation::TimelineKeyframeHandle>,
     keys: Res<ButtonInput<KeyCode>>,
     mut selection: ResMut<selection::Selection>,
@@ -2172,21 +2148,6 @@ fn drop_imported_clip_entities(
 }
 
 /// The View menu's viewport camera rows: field of view and far clip presets, and looking through a scene camera.
-/// The View menu's physics overlay toggles.
-#[cfg(feature = "physics")]
-fn physics_view_rows() -> Vec<(String, String)> {
-    vec![
-        op_entry::<view_ops::ViewToggleColliderGizmosOp>("Toggle Collider Gizmos"),
-        op_entry::<view_ops::ViewToggleHierarchyArrowsOp>("Toggle Hierarchy Arrows"),
-    ]
-}
-
-/// No physics overlays: the editor was built without physics.
-#[cfg(not(feature = "physics"))]
-fn physics_view_rows() -> Vec<(String, String)> {
-    Vec::new()
-}
-
 fn viewport_lens_rows(lens: &camera_settings::CameraPreferences) -> Vec<(String, String)> {
     let id = camera_settings::ViewportCameraOp::ID;
     let fov = [30.0_f32, 45.0, 60.0, 75.0, 90.0].map(|degrees| {
@@ -2394,7 +2355,6 @@ fn populate_menu(
                     op_entry::<view_ops::ViewToggleBrushOutlineOp>("Toggle Brush Outline"),
                     op_entry::<view_ops::ViewToggleAlignmentGuidesOp>("Toggle Alignment Guides"),
                 ],
-                physics_view_rows(),
                 vec![
                     op_entry::<lod_group::ViewCycleForcedLodOp>("Cycle Forced LOD"),
                     op_entry::<lod_bar::ViewToggleLodColorsOp>("Toggle LOD Colors"),
@@ -2735,6 +2695,7 @@ fn file_menu_rows(hot_reload_label: &str, recent: Vec<(String, String)>) -> Vec<
             separator(),
             op_entry::<app_ops::AppOpenKeybindsOp>("Keybinds..."),
             op_entry::<app_ops::AppOpenExtensionsOp>("Extensions..."),
+            op_entry::<project_modules::ProjectModulesOp>("Modules..."),
             op_entry::<app_ops::AppToggleHotReloadOp>(hot_reload_label),
             op_entry::<app_ops::AppGoHomeOp>("Home"),
         ],
@@ -2949,7 +2910,7 @@ fn cleanup_editor(world: &mut World) {
     world.insert_resource(scenes::confirm_dialog::PendingTabClose::default());
     world.remove_resource::<project_select::PendingSceneOpens>();
     world.insert_resource(terrain::TerrainDataStore::default());
-    terrain::navmesh_bake::forget_scene_navmesh(world);
+    scenes::reset_scene_resources(world);
     world.insert_resource(brush::BrushSelection::default());
 
     // 6. Remove project root
@@ -3062,14 +3023,14 @@ pub(crate) fn open_recent_dialog(world: &mut World) {
 
         // Hover effects
         world.commands().entity(row).observe(
-            |hover: On<Pointer<Over>>, mut bg: Query<&mut BackgroundColor>| {
+            |hover: On<PointerOver>, mut bg: Query<&mut BackgroundColor>| {
                 if let Ok(mut bg) = bg.get_mut(hover.event_target()) {
                     bg.0 = jackdaw_feathers::tokens::HOVER_BG;
                 }
             },
         );
         world.commands().entity(row).observe(
-            |out: On<Pointer<Out>>, mut bg: Query<&mut BackgroundColor>| {
+            |out: On<PointerOut>, mut bg: Query<&mut BackgroundColor>| {
                 if let Ok(mut bg) = bg.get_mut(out.event_target()) {
                     bg.0 = jackdaw_feathers::tokens::TOOLBAR_BG;
                 }
@@ -3077,8 +3038,10 @@ pub(crate) fn open_recent_dialog(world: &mut World) {
         );
 
         // Click: open the project
-        world.commands().entity(row).observe(
-            move |_: On<Pointer<Click>>, mut commands: Commands| {
+        world
+            .commands()
+            .entity(row)
+            .observe(move |_: On<PointerClick>, mut commands: Commands| {
                 let path = path.clone();
                 commands.insert_resource(project_select::PendingAutoOpen {
                     path: path.clone(),
@@ -3093,8 +3056,7 @@ pub(crate) fn open_recent_dialog(world: &mut World) {
                             .set(AppState::ProjectSelect);
                     }
                 });
-            },
-        );
+            });
 
         world.commands().entity(slot_entity).add_child(row);
     }
